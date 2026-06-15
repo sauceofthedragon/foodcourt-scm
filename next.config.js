@@ -1,4 +1,4 @@
-﻿/** @type {import('next').NextConfig} */
+/** @type {import('next').NextConfig} */
 const nextConfig = {
   env: {
     NEXT_PUBLIC_SUPABASE_URL: 'https://ubhirekjjnlrwiwrqaqs.supabase.co',
