@@ -30,7 +30,7 @@ export default function Navigation() {
       <aside className="hidden md:flex flex-col fixed left-0 top-0 h-full w-56 bg-white border-r border-gray-200 z-40">
         <div className="px-4 py-5 border-b border-gray-100">
           <h1 className="text-base font-bold text-orange-600 leading-tight">
-            フードコート<br />管理システム
+            ソースオブザドラゴン<br />管理システム
           </h1>
         </div>
         <nav className="flex-1 px-2 py-4 space-y-1">
