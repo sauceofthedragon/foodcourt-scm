@@ -1,34 +1,30 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+// 既存ページ向け後方互換ラッパー — 新規コードは lib/supabase/client.ts を使用
+import { createBrowserClient } from '@supabase/ssr'
 
-let _supabase: SupabaseClient | null = null
+type BrowserClient = ReturnType<typeof createBrowserClient>
 
-function getSupabase(): SupabaseClient {
-  if (_supabase) return _supabase
+let _client: BrowserClient | null = null
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+function getClient(): BrowserClient {
+  if (_client) return _client
 
-  if (!supabaseUrl || !supabaseAnonKey ||
-      supabaseUrl === 'your_supabase_project_url' ||
-      supabaseAnonKey === 'your_supabase_anon_key') {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  if (!url || !key ||
+      url === 'your_supabase_project_url' ||
+      key === 'your_supabase_anon_key') {
     throw new Error(
       '.env.local に NEXT_PUBLIC_SUPABASE_URL と NEXT_PUBLIC_SUPABASE_ANON_KEY を設定してください。'
     )
   }
 
-  _supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
-      },
-    },
-  })
-
-  return _supabase
+  _client = createBrowserClient(url, key)
+  return _client
 }
 
-export const supabase = new Proxy({} as SupabaseClient, {
+export const supabase = new Proxy({} as BrowserClient, {
   get(_target, prop) {
-    return getSupabase()[prop as keyof SupabaseClient]
+    return getClient()[prop as keyof BrowserClient]
   },
 })
