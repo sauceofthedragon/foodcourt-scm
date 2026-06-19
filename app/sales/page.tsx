@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Sale, PayMethod } from '@/lib/database.types'
-import { Plus, Search, X, ChevronDown, TrendingUp } from 'lucide-react'
+import { Plus, Search, X, ChevronDown, TrendingUp, Pencil } from 'lucide-react'
 import { format } from 'date-fns'
 import clsx from 'clsx'
 
@@ -44,6 +44,7 @@ export default function SalesPage() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<FormData>(emptyForm())
   const [saving, setSaving] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [filterCategory, setFilterCategory] = useState('')
 
@@ -76,7 +77,7 @@ export default function SalesPage() {
     if (!form.amount || !form.date) return
     setSaving(true)
 
-    await supabase.from('sales').insert({
+    const payload = {
       date: form.date,
       time: form.time,
       amount: parseInt(form.amount),
@@ -84,11 +85,37 @@ export default function SalesPage() {
       category: form.category || null,
       table_no: form.table_no || null,
       notes: form.notes || null,
-    })
+    }
+
+    if (editingId) {
+      const { data } = await supabase
+        .from('sales')
+        .update(payload)
+        .eq('id', editingId)
+        .select()
+      if (data) setSales((prev) => prev.map((s) => (s.id === editingId ? data[0] : s)))
+    } else {
+      await supabase.from('sales').insert(payload)
+    }
 
     setSaving(false)
     setShowForm(false)
+    setEditingId(null)
     setForm(emptyForm())
+  }
+
+  const handleEdit = (s: Sale) => {
+    setEditingId(s.id)
+    setForm({
+      date: s.date,
+      time: s.time,
+      amount: String(s.amount),
+      pay_method: s.pay_method,
+      category: s.category ?? 'その他',
+      table_no: s.table_no ?? '',
+      notes: s.notes ?? '',
+    })
+    setShowForm(true)
   }
 
   const handleDelete = async (id: string) => {
@@ -108,7 +135,7 @@ export default function SalesPage() {
       <div className="flex items-center justify-between">
         <h1 className="page-title">売上記録</h1>
         <button
-          onClick={() => { setForm(emptyForm()); setShowForm(true) }}
+          onClick={() => { setEditingId(null); setForm(emptyForm()); setShowForm(true) }}
           className="btn-primary flex items-center gap-1 text-sm py-1.5"
         >
           <Plus size={16} />
@@ -194,6 +221,12 @@ export default function SalesPage() {
                     ¥{s.amount.toLocaleString()}
                   </span>
                   <button
+                    onClick={() => handleEdit(s)}
+                    className="text-gray-300 hover:text-orange-400 transition-colors p-1"
+                  >
+                    <Pencil size={15} />
+                  </button>
+                  <button
                     onClick={() => handleDelete(s.id)}
                     className="text-gray-300 hover:text-red-400 transition-colors p-1"
                   >
@@ -211,8 +244,8 @@ export default function SalesPage() {
         <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
             <div className="sticky top-0 bg-white px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="font-bold text-gray-900">売上登録</h2>
-              <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600">
+              <h2 className="font-bold text-gray-900">{editingId ? '売上編集' : '売上登録'}</h2>
+              <button onClick={() => { setShowForm(false); setEditingId(null) }} className="text-gray-400 hover:text-gray-600">
                 <X size={20} />
               </button>
             </div>
@@ -299,7 +332,7 @@ export default function SalesPage() {
                 />
               </div>
               <div className="flex gap-2 pt-2">
-                <button onClick={() => setShowForm(false)} className="btn-secondary flex-1">
+                <button onClick={() => { setShowForm(false); setEditingId(null) }} className="btn-secondary flex-1">
                   キャンセル
                 </button>
                 <button
@@ -307,7 +340,7 @@ export default function SalesPage() {
                   disabled={saving || !form.amount}
                   className="btn-primary flex-1"
                 >
-                  {saving ? '登録中...' : '登録'}
+                  {saving ? (editingId ? '更新中...' : '登録中...') : (editingId ? '更新' : '登録')}
                 </button>
               </div>
             </div>

@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { InventoryItem, Purchase } from '@/lib/database.types'
-import { Plus, X, ChevronDown, AlertTriangle, ShoppingBag, Package } from 'lucide-react'
+import { Plus, X, ChevronDown, AlertTriangle, ShoppingBag, Package, Pencil } from 'lucide-react'
 import { format } from 'date-fns'
 import clsx from 'clsx'
 
@@ -64,6 +64,7 @@ export default function InventoryPage() {
   const [itemForm, setItemForm] = useState<ItemForm>(emptyItemForm)
   const [purchaseForm, setPurchaseForm] = useState<PurchaseForm>(emptyPurchaseForm())
   const [saving, setSaving] = useState(false)
+  const [editingPurchase, setEditingPurchase] = useState<Purchase | null>(null)
   const [filterCategory, setFilterCategory] = useState('')
   const [showLowStock, setShowLowStock] = useState(false)
 
@@ -152,6 +153,20 @@ export default function InventoryPage() {
     await supabase.from('inventory').delete().eq('id', id)
   }
 
+  const startEditPurchase = (p: Purchase) => {
+    setEditingPurchase(p)
+    setPurchaseForm({
+      date: p.date,
+      item_id: p.item_id ?? '',
+      item_name: p.item_name,
+      qty: String(p.qty),
+      unit_cost: String(p.unit_cost),
+      supplier: p.supplier ?? '',
+      notes: p.notes ?? '',
+    })
+    setShowPurchaseForm(true)
+  }
+
   const handleSavePurchase = async () => {
     if (!purchaseForm.item_name || !purchaseForm.qty || !purchaseForm.unit_cost) return
     setSaving(true)
@@ -159,31 +174,60 @@ export default function InventoryPage() {
     const qty = parseFloat(purchaseForm.qty)
     const unit_cost = parseInt(purchaseForm.unit_cost)
     const total = Math.round(qty * unit_cost)
+    const newItemId = purchaseForm.item_id || null
 
-    await supabase.from('purchases').insert({
+    const payload = {
       date: purchaseForm.date,
-      item_id: purchaseForm.item_id || null,
+      item_id: newItemId,
       item_name: purchaseForm.item_name,
       qty,
       unit_cost,
       total,
       supplier: purchaseForm.supplier || null,
       notes: purchaseForm.notes || null,
-    })
+    }
 
-    // Update stock
-    if (purchaseForm.item_id) {
-      const item = items.find((i) => i.id === purchaseForm.item_id)
-      if (item) {
-        await supabase
-          .from('inventory')
-          .update({ stock: item.stock + qty })
-          .eq('id', purchaseForm.item_id)
+    if (editingPurchase) {
+      await supabase.from('purchases').update(payload).eq('id', editingPurchase.id).select()
+
+      // Adjust stock: reverse old qty, apply new qty
+      const oldItemId = editingPurchase.item_id ?? null
+      if (oldItemId === newItemId && newItemId) {
+        const delta = qty - editingPurchase.qty
+        if (delta !== 0) {
+          const item = items.find((i) => i.id === newItemId)
+          if (item) {
+            await supabase.from('inventory').update({ stock: item.stock + delta }).eq('id', newItemId)
+          }
+        }
+      } else {
+        if (oldItemId) {
+          const oldItem = items.find((i) => i.id === oldItemId)
+          if (oldItem) {
+            await supabase.from('inventory').update({ stock: oldItem.stock - editingPurchase.qty }).eq('id', oldItemId)
+          }
+        }
+        if (newItemId) {
+          const newItem = items.find((i) => i.id === newItemId)
+          if (newItem) {
+            await supabase.from('inventory').update({ stock: newItem.stock + qty }).eq('id', newItemId)
+          }
+        }
+      }
+    } else {
+      await supabase.from('purchases').insert(payload)
+
+      if (newItemId) {
+        const item = items.find((i) => i.id === newItemId)
+        if (item) {
+          await supabase.from('inventory').update({ stock: item.stock + qty }).eq('id', newItemId)
+        }
       }
     }
 
     setSaving(false)
     setShowPurchaseForm(false)
+    setEditingPurchase(null)
     setPurchaseForm(emptyPurchaseForm())
   }
 
@@ -201,7 +245,7 @@ export default function InventoryPage() {
         <h1 className="page-title">在庫管理</h1>
         <div className="flex gap-2">
           <button
-            onClick={() => { setPurchaseForm(emptyPurchaseForm()); setShowPurchaseForm(true) }}
+            onClick={() => { setEditingPurchase(null); setPurchaseForm(emptyPurchaseForm()); setShowPurchaseForm(true) }}
             className="btn-secondary flex items-center gap-1 text-sm py-1.5 px-3"
           >
             <ShoppingBag size={14} />
@@ -339,9 +383,15 @@ export default function InventoryPage() {
                     </div>
                     {p.notes && <p className="text-xs text-gray-400 mt-0.5">{p.notes}</p>}
                   </div>
-                  <span className="font-bold text-gray-900 shrink-0">
-                    ¥{p.total.toLocaleString()}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-bold text-gray-900">¥{p.total.toLocaleString()}</span>
+                    <button
+                      onClick={() => startEditPurchase(p)}
+                      className="text-gray-300 hover:text-orange-400 transition-colors p-1"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                  </div>
                 </div>
               </div>
             ))
@@ -459,8 +509,8 @@ export default function InventoryPage() {
         <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
             <div className="sticky top-0 bg-white px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="font-bold text-gray-900">仕入れ登録</h2>
-              <button onClick={() => setShowPurchaseForm(false)} className="text-gray-400 hover:text-gray-600">
+              <h2 className="font-bold text-gray-900">{editingPurchase ? '仕入れ編集' : '仕入れ登録'}</h2>
+              <button onClick={() => { setShowPurchaseForm(false); setEditingPurchase(null) }} className="text-gray-400 hover:text-gray-600">
                 <X size={20} />
               </button>
             </div>
@@ -553,7 +603,7 @@ export default function InventoryPage() {
                 />
               </div>
               <div className="flex gap-2 pt-2">
-                <button onClick={() => setShowPurchaseForm(false)} className="btn-secondary flex-1">
+                <button onClick={() => { setShowPurchaseForm(false); setEditingPurchase(null) }} className="btn-secondary flex-1">
                   キャンセル
                 </button>
                 <button
@@ -561,7 +611,7 @@ export default function InventoryPage() {
                   disabled={saving || !purchaseForm.item_name || !purchaseForm.qty || !purchaseForm.unit_cost}
                   className="btn-primary flex-1"
                 >
-                  {saving ? '登録中...' : '登録'}
+                  {saving ? (editingPurchase ? '更新中...' : '登録中...') : (editingPurchase ? '更新' : '登録')}
                 </button>
               </div>
             </div>
