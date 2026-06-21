@@ -45,10 +45,14 @@ const emptyForm = (): FormData => ({
 export default function SalesPage() {
   const [sales, setSales] = useState<Sale[]>([])
   const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+  }, [])
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<FormData>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [filterCategory, setFilterCategory] = useState('')
 
@@ -91,6 +95,8 @@ export default function SalesPage() {
       notes: form.notes || null,
       lunch_count: parseInt(form.lunch_count) || 0,
       dinner_count: parseInt(form.dinner_count) || 0,
+      user_id: userId,
+      user_id: user?.id ?? null,
 
     }
 
