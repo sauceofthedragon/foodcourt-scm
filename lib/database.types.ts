@@ -67,6 +67,8 @@ export type Sale = {
   table_no: string | null
   notes: string | null
   created_at: string
+  lunch_count: number | null
+  dinner_count: number | null
 }
 
 export type InventoryItem = {

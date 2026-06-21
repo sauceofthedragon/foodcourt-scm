@@ -26,6 +26,8 @@ type FormData = {
   category: string
   table_no: string
   notes: string
+  lunch_count: string
+  dinner_count: string
 }
 
 const emptyForm = (): FormData => ({
@@ -36,6 +38,8 @@ const emptyForm = (): FormData => ({
   category: 'フード',
   table_no: '',
   notes: '',
+  lunch_count: '',
+  dinner_count: '',
 })
 
 export default function SalesPage() {
@@ -85,6 +89,9 @@ export default function SalesPage() {
       category: form.category || null,
       table_no: form.table_no || null,
       notes: form.notes || null,
+      lunch_count: parseInt(form.lunch_count) || 0,
+      dinner_count: parseInt(form.dinner_count) || 0,
+
     }
 
     if (editingId) {
@@ -114,6 +121,8 @@ export default function SalesPage() {
       category: s.category ?? 'その他',
       table_no: s.table_no ?? '',
       notes: s.notes ?? '',
+      lunch_count: String(s.lunch_count ?? ''),
+      dinner_count: String(s.dinner_count ?? ''),
     })
     setShowForm(true)
   }
@@ -313,6 +322,32 @@ export default function SalesPage() {
                   <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                 </div>
               </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">ランチ人数</label>
+                  <input
+                    type="number"
+                    min="0"
+                    className="input-field"
+                    placeholder="0"
+                    value={form.lunch_count}
+                    onChange={(e) => setForm({ ...form, lunch_count: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">ディナー人数</label>
+                  <input
+                    type="number"
+                    min="0"
+                    className="input-field"
+                    placeholder="0"
+                    value={form.dinner_count}
+                    onChange={(e) => setForm({ ...form, dinner_count: e.target.value })}
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="text-xs font-medium text-gray-600 mb-1 block">テーブルNo.</label>
                 <input
