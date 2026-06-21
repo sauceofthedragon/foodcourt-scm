@@ -96,7 +96,6 @@ export default function SalesPage() {
       lunch_count: parseInt(form.lunch_count) || 0,
       dinner_count: parseInt(form.dinner_count) || 0,
       user_id: userId,
-      user_id: user?.id ?? null,
 
     }
 
