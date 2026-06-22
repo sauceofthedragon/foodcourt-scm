@@ -1,18 +1,5 @@
-import { createClient } from '@/lib/supabase/server'
-import { NextResponse } from 'next/server'
-
-export async function POST(request: Request) {
-  const { password } = await request.json()
-  const supabase = await createClient()
-
-  const { error } = await supabase.auth.signInWithPassword({
-    email: process.env.ADMIN_EMAIL!,
-    password,
-  })
-
-  if (error) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  return NextResponse.json({ ok: true })
+// app/api/auth/login/route.ts
+// このAPIルートは廃止。認証はクライアントから直接Supabase Authを呼ぶ方式に移行済み。
+export async function POST() {
+  return new Response("Gone", { status: 410 })
 }
