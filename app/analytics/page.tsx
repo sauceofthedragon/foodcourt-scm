@@ -19,7 +19,7 @@ import {
   Cell,
   Legend,
 } from 'recharts'
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, subMonths } from 'date-fns'
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, subMonths, subDays, eachDayOfInterval as eachDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import clsx from 'clsx'
 
@@ -44,6 +44,14 @@ type CategoryData = {
   value: number
 }
 
+// ── 来客数トレンド用 ──────────────────────────────────────────
+type VisitorData = {
+  date: string
+  label: string
+  lunch: number
+  dinner: number
+}
+
 const PIE_COLORS = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444']
 
 export default function AnalyticsPage() {
@@ -59,6 +67,10 @@ export default function AnalyticsPage() {
     count: 0,
     max: 0,
   })
+
+  // ── 来客数トレンド state ──────────────────────────────────────
+  const [visitorData, setVisitorData] = useState<VisitorData[]>([])
+  const [visitorLoading, setVisitorLoading] = useState(true)
 
   const fetchDailyData = useCallback(async () => {
     setLoading(true)
@@ -166,6 +178,50 @@ export default function AnalyticsPage() {
     setLoading(false)
   }, [])
 
+  // ── 来客数トレンド フェッチ（直近30日固定） ──────────────────
+  const fetchVisitorData = useCallback(async () => {
+    setVisitorLoading(true)
+
+    const today = new Date()
+    const from = subDays(today, 29) // 30日前（当日含む）
+    const fromStr = format(from, 'yyyy-MM-dd')
+    const toStr = format(today, 'yyyy-MM-dd')
+
+    const { data: raw } = await supabase
+      .from('sales')
+      .select('date, lunch_count, dinner_count')
+      .gte('date', fromStr)
+      .lte('date', toStr)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = raw as any[] | null
+
+    // 日付ごとに SUM
+    const grouped: Record<string, { lunch: number; dinner: number }> = {}
+    if (rows) {
+      rows.forEach((r) => {
+        if (!grouped[r.date]) grouped[r.date] = { lunch: 0, dinner: 0 }
+        grouped[r.date].lunch += r.lunch_count ?? 0
+        grouped[r.date].dinner += r.dinner_count ?? 0
+      })
+    }
+
+    // 30日分の連続した日付を生成し、欠損日は 0 補完
+    const days = eachDay({ start: from, end: today })
+    const visitor: VisitorData[] = days.map((d) => {
+      const key = format(d, 'yyyy-MM-dd')
+      return {
+        date: key,
+        label: format(d, 'M/d', { locale: ja }),
+        lunch: grouped[key]?.lunch ?? 0,
+        dinner: grouped[key]?.dinner ?? 0,
+      }
+    })
+
+    setVisitorData(visitor)
+    setVisitorLoading(false)
+  }, [])
+
   useEffect(() => {
     if (viewMode === 'daily') {
       fetchDailyData()
@@ -173,6 +229,11 @@ export default function AnalyticsPage() {
       fetchMonthlyData()
     }
   }, [viewMode, fetchDailyData, fetchMonthlyData])
+
+  // 来客数トレンドはページロード時に一度だけ取得（viewMode に依存しない）
+  useEffect(() => {
+    fetchVisitorData()
+  }, [fetchVisitorData])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartData: any[] = viewMode === 'daily' ? dailyData : monthlyData
@@ -184,6 +245,7 @@ export default function AnalyticsPage() {
     return String(value)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       return (
@@ -191,6 +253,21 @@ export default function AnalyticsPage() {
           <p className="font-semibold text-gray-900 mb-1">{label}</p>
           <p className="text-green-700">売上: ¥{(payload[0]?.value ?? 0).toLocaleString()}</p>
           {payload[1] && <p className="text-blue-600">件数: {payload[1]?.value}件</p>}
+        </div>
+      )
+    }
+    return null
+  }
+
+  // ── 来客数トレンド用 Tooltip ──────────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const VisitorTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white border border-gray-100 shadow-lg rounded-lg px-3 py-2 text-xs">
+          <p className="font-semibold text-gray-900 mb-1">{label}</p>
+          <p className="text-blue-500">ランチ: {payload[0]?.value ?? 0}人</p>
+          <p className="text-orange-500">ディナー: {payload[1]?.value ?? 0}人</p>
         </div>
       )
     }
@@ -378,6 +455,73 @@ export default function AnalyticsPage() {
           )}
         </>
       )}
+
+      {/* ── 来客数トレンド（直近30日） ────────────────────────────── */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900">来客数トレンド</h2>
+          <span className="text-xs text-gray-400">直近30日</span>
+        </div>
+
+        {visitorLoading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500" />
+          </div>
+        ) : (
+          <>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={visitorData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 9, fill: '#9ca3af' }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval={4}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: '#9ca3af' }}
+                  tickLine={false}
+                  axisLine={false}
+                  allowDecimals={false}
+                  width={28}
+                />
+                <Tooltip content={<VisitorTooltip />} />
+                <Line
+                  type="monotone"
+                  dataKey="lunch"
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  name="ランチ"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="dinner"
+                  stroke="#f97316"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  name="ディナー"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+
+            {/* 凡例 */}
+            <div className="flex items-center gap-4 mt-3 justify-end">
+              <div className="flex items-center gap-1.5">
+                <span className="w-4 h-0.5 bg-blue-500 inline-block rounded" />
+                <span className="text-xs text-gray-500">ランチ</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-4 h-0.5 bg-orange-500 inline-block rounded" />
+                <span className="text-xs text-gray-500">ディナー</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
