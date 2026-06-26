@@ -28,7 +28,11 @@ type FormData = {
   notes: string
   lunch_count: string
   dinner_count: string
+  customer_id: string
 }
+
+// emptyForm の直前に追加
+type Customer = { id: string; name: string }
 
 const emptyForm = (): FormData => ({
   date: format(new Date(), 'yyyy-MM-dd'),
@@ -40,6 +44,7 @@ const emptyForm = (): FormData => ({
   notes: '',
   lunch_count: '',
   dinner_count: '',
+  customer_id: '',
 })
 
 export default function SalesPage() {
@@ -55,6 +60,12 @@ export default function SalesPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [filterCategory, setFilterCategory] = useState('')
+  const [customers, setCustomers] = useState<Customer[]>([])
+  useEffect(() => {
+    supabase.from('customers').select('id, name').order('name').then(({ data }) => {
+      setCustomers(data ?? [])
+    })
+  }, [])
 
   const fetchSales = useCallback(async () => {
     let query = supabase
@@ -96,7 +107,12 @@ export default function SalesPage() {
       lunch_count: parseInt(form.lunch_count) || 0,
       dinner_count: parseInt(form.dinner_count) || 0,
       user_id: userId,
+      customer_id: form.customer_id || null,
 
+    }
+
+    if (!editingId && form.customer_id) {
+      await supabase.rpc('increment_visit_count', { cust_id: form.customer_id })
     }
 
     if (editingId) {
@@ -128,6 +144,7 @@ export default function SalesPage() {
       notes: s.notes ?? '',
       lunch_count: String(s.lunch_count ?? ''),
       dinner_count: String(s.dinner_count ?? ''),
+      customer_id: (s as any).customer_id ?? '',
     })
     setShowForm(true)
   }
@@ -361,6 +378,22 @@ export default function SalesPage() {
                   value={form.table_no}
                   onChange={(e) => setForm({ ...form, table_no: e.target.value })}
                 />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600 mb-1 block">顧客（任意）</label>
+                <div className="relative">
+                  <select
+                    className="input-field appearance-none pr-7"
+                    value={form.customer_id}
+                    onChange={(e) => setForm({ ...form, customer_id: e.target.value })}
+                  >
+                    <option value="">飛び込み・選択なし</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                </div>
               </div>
               <div>
                 <label className="text-xs font-medium text-gray-600 mb-1 block">メモ</label>
