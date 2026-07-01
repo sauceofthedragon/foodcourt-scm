@@ -19,7 +19,7 @@ import {
   Cell,
   Legend,
 } from 'recharts'
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, subMonths, subDays, eachDayOfInterval as eachDay } from 'date-fns'
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, subMonths } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import clsx from 'clsx'
 
@@ -44,7 +44,6 @@ type CategoryData = {
   value: number
 }
 
-// ── 来客数トレンド用 ──────────────────────────────────────────
 type VisitorData = {
   date: string
   label: string
@@ -69,8 +68,16 @@ export default function AnalyticsPage() {
   })
 
   // ── 来客数トレンド state ──────────────────────────────────────
+  const [visitorViewMode, setVisitorViewMode] = useState<ViewMode>('daily')
+  const [selectedVisitorMonth, setSelectedVisitorMonth] = useState(format(new Date(), 'yyyy-MM'))
+  const [selectedYear, setSelectedYear] = useState(format(new Date(), 'yyyy'))
   const [visitorData, setVisitorData] = useState<VisitorData[]>([])
   const [visitorLoading, setVisitorLoading] = useState(true)
+  const [visitorSummary, setVisitorSummary] = useState({ total: 0, lunch: 0, dinner: 0 })
+
+  const recentYears = Array.from({ length: 5 }, (_, i) =>
+    String(new Date().getFullYear() - i)
+  )
 
   const fetchDailyData = useCallback(async () => {
     setLoading(true)
@@ -178,25 +185,21 @@ export default function AnalyticsPage() {
     setLoading(false)
   }, [])
 
-  // ── 来客数トレンド フェッチ（直近30日固定） ──────────────────
-  const fetchVisitorData = useCallback(async () => {
+  // ── 来客数トレンド: 日次取得 ──────────────────────────────────
+  const fetchDailyVisitorData = useCallback(async (targetMonth: string) => {
     setVisitorLoading(true)
-
-    const today = new Date()
-    const from = subDays(today, 29) // 30日前（当日含む）
-    const fromStr = format(from, 'yyyy-MM-dd')
-    const toStr = format(today, 'yyyy-MM-dd')
+    const monthStart = startOfMonth(new Date(targetMonth + '-01'))
+    const monthEnd = endOfMonth(monthStart)
 
     const { data: raw } = await supabase
       .from('sales')
       .select('date, lunch_count, dinner_count')
-      .gte('date', fromStr)
-      .lte('date', toStr)
+      .gte('date', format(monthStart, 'yyyy-MM-dd'))
+      .lte('date', format(monthEnd, 'yyyy-MM-dd'))
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rows = raw as any[] | null
 
-    // 日付ごとに SUM
     const grouped: Record<string, { lunch: number; dinner: number }> = {}
     if (rows) {
       rows.forEach((r) => {
@@ -206,18 +209,60 @@ export default function AnalyticsPage() {
       })
     }
 
-    // 30日分の連続した日付を生成し、欠損日は 0 補完
-    const days = eachDay({ start: from, end: today })
+    const days = eachDayOfInterval({ start: monthStart, end: monthEnd })
     const visitor: VisitorData[] = days.map((d) => {
       const key = format(d, 'yyyy-MM-dd')
       return {
         date: key,
-        label: format(d, 'M/d', { locale: ja }),
+        label: format(d, 'd日', { locale: ja }),
         lunch: grouped[key]?.lunch ?? 0,
         dinner: grouped[key]?.dinner ?? 0,
       }
     })
 
+    const totalLunch = visitor.reduce((s, v) => s + v.lunch, 0)
+    const totalDinner = visitor.reduce((s, v) => s + v.dinner, 0)
+    setVisitorSummary({ total: totalLunch + totalDinner, lunch: totalLunch, dinner: totalDinner })
+    setVisitorData(visitor)
+    setVisitorLoading(false)
+  }, [])
+
+  // ── 来客数トレンド: 月次取得 ──────────────────────────────────
+  const fetchMonthlyVisitorData = useCallback(async (targetYear: string) => {
+    setVisitorLoading(true)
+
+    const { data: raw } = await supabase
+      .from('sales')
+      .select('date, lunch_count, dinner_count')
+      .gte('date', `${targetYear}-01-01`)
+      .lte('date', `${targetYear}-12-31`)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = raw as any[] | null
+
+    const grouped: Record<string, { lunch: number; dinner: number }> = {}
+    if (rows) {
+      rows.forEach((r) => {
+        const m = r.date.slice(0, 7)
+        if (!grouped[m]) grouped[m] = { lunch: 0, dinner: 0 }
+        grouped[m].lunch += r.lunch_count ?? 0
+        grouped[m].dinner += r.dinner_count ?? 0
+      })
+    }
+
+    const visitor: VisitorData[] = Array.from({ length: 12 }, (_, i) => {
+      const m = `${targetYear}-${String(i + 1).padStart(2, '0')}`
+      return {
+        date: m,
+        label: format(new Date(m + '-01'), 'M月', { locale: ja }),
+        lunch: grouped[m]?.lunch ?? 0,
+        dinner: grouped[m]?.dinner ?? 0,
+      }
+    })
+
+    const totalLunch = visitor.reduce((s, v) => s + v.lunch, 0)
+    const totalDinner = visitor.reduce((s, v) => s + v.dinner, 0)
+    setVisitorSummary({ total: totalLunch + totalDinner, lunch: totalLunch, dinner: totalDinner })
     setVisitorData(visitor)
     setVisitorLoading(false)
   }, [])
@@ -230,10 +275,13 @@ export default function AnalyticsPage() {
     }
   }, [viewMode, fetchDailyData, fetchMonthlyData])
 
-  // 来客数トレンドはページロード時に一度だけ取得（viewMode に依存しない）
   useEffect(() => {
-    fetchVisitorData()
-  }, [fetchVisitorData])
+    if (visitorViewMode === 'daily') {
+      fetchDailyVisitorData(selectedVisitorMonth)
+    } else {
+      fetchMonthlyVisitorData(selectedYear)
+    }
+  }, [visitorViewMode, selectedVisitorMonth, selectedYear, fetchDailyVisitorData, fetchMonthlyVisitorData])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartData: any[] = viewMode === 'daily' ? dailyData : monthlyData
@@ -259,7 +307,6 @@ export default function AnalyticsPage() {
     return null
   }
 
-  // ── 来客数トレンド用 Tooltip ──────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const VisitorTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
@@ -456,11 +503,60 @@ export default function AnalyticsPage() {
         </>
       )}
 
-      {/* ── 来客数トレンド（直近30日） ────────────────────────────── */}
+      {/* ── 来客数トレンド ────────────────────────────── */}
       <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-gray-900">来客数トレンド</h2>
-          <span className="text-xs text-gray-400">直近30日</span>
+        <h2 className="font-semibold text-gray-900 mb-3">来客数トレンド</h2>
+
+        {/* Visitor view mode toggle */}
+        <div className="flex bg-gray-100 rounded-lg p-1 mb-3">
+          {(['daily', 'monthly'] as ViewMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setVisitorViewMode(m)}
+              className={clsx(
+                'flex-1 py-1.5 rounded-md text-sm font-medium transition-colors',
+                visitorViewMode === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
+              )}
+            >
+              {m === 'daily' ? '日別' : '月別'}
+            </button>
+          ))}
+        </div>
+
+        {/* Period selector */}
+        {visitorViewMode === 'daily' ? (
+          <input
+            type="month"
+            value={selectedVisitorMonth}
+            onChange={(e) => setSelectedVisitorMonth(e.target.value)}
+            className="input-field mb-3"
+          />
+        ) : (
+          <select
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(e.target.value)}
+            className="input-field mb-3"
+          >
+            {recentYears.map((y) => (
+              <option key={y} value={y}>{y}年</option>
+            ))}
+          </select>
+        )}
+
+        {/* Summary cards */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className="bg-gray-50 rounded-lg p-2 text-center">
+            <p className="text-xs text-gray-500 mb-0.5">来店総数</p>
+            <p className="text-lg font-bold text-gray-900">{visitorSummary.total.toLocaleString()}人</p>
+          </div>
+          <div className="bg-blue-50 rounded-lg p-2 text-center">
+            <p className="text-xs text-gray-500 mb-0.5">ランチ</p>
+            <p className="text-lg font-bold text-blue-600">{visitorSummary.lunch.toLocaleString()}人</p>
+          </div>
+          <div className="bg-orange-50 rounded-lg p-2 text-center">
+            <p className="text-xs text-gray-500 mb-0.5">ディナー</p>
+            <p className="text-lg font-bold text-orange-500">{visitorSummary.dinner.toLocaleString()}人</p>
+          </div>
         </div>
 
         {visitorLoading ? (
@@ -477,7 +573,7 @@ export default function AnalyticsPage() {
                   tick={{ fontSize: 9, fill: '#9ca3af' }}
                   tickLine={false}
                   axisLine={false}
-                  interval={4}
+                  interval={visitorViewMode === 'daily' ? 4 : 0}
                 />
                 <YAxis
                   tick={{ fontSize: 10, fill: '#9ca3af' }}
