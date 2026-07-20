@@ -18,12 +18,30 @@ const PAY_METHOD_LABELS: Record<PayMethod, string> = {
 
 const CATEGORIES = ['フード', 'ドリンク', 'アルコール', 'デザート', 'セット', 'テイクアウト', 'その他']
 
+// category ごとの静的クラス名（Tailwindの動的クラス生成はビルド時にパージされるため使わない）
+function menuItemButtonClass(category: string): string {
+  if (category === 'フード') return 'bg-orange-50 border-orange-200 text-orange-700 hover:bg-orange-100'
+  if (category === 'アルコール') return 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100'
+  if (category === 'ドリンク') return 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+  return 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+}
+
+// 空文字・null・undefined は null に変換（Postgres側のinteger/numeric変換エラー防止）
+function toNullableNumber(value: unknown): number | null {
+  if (value === '' || value == null) return null
+  return Number(value)
+}
+
+// 空文字・null・undefined は 0 に変換
+function toNumberOrZero(value: unknown): number {
+  if (value === '' || value == null) return 0
+  return Number(value)
+}
+
 type FormData = {
   date: string
   time: string
-  amount: string
   pay_method: PayMethod
-  category: string
   table_no: string
   notes: string
   lunch_count: string
@@ -34,12 +52,28 @@ type FormData = {
 // emptyForm の直前に追加
 type Customer = { id: string; name: string }
 
+type MenuItem = {
+  id: string
+  name: string
+  category: string
+  menu_group: string | null
+  price: number
+  cost: number | null
+}
+
+type SaleItem = {
+  menu_item_id: string | null
+  item_name: string
+  qty: number
+  unit_price: number
+  unit_cost: number | null
+  subtotal: number
+}
+
 const emptyForm = (): FormData => ({
   date: format(new Date(), 'yyyy-MM-dd'),
   time: format(new Date(), 'HH:mm'),
-  amount: '',
   pay_method: 'cash',
-  category: 'フード',
   table_no: '',
   notes: '',
   lunch_count: '',
@@ -56,6 +90,7 @@ export default function SalesPage() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<FormData>(emptyForm())
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'))
@@ -65,6 +100,19 @@ export default function SalesPage() {
     supabase.from('customers').select('id, name').order('name').then(({ data }) => {
       setCustomers(data ?? [])
     })
+  }, [])
+
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([])
+  const [items, setItems] = useState<SaleItem[]>([])
+  const [discount, setDiscount] = useState(0)
+  useEffect(() => {
+    supabase.from('menu_items')
+      .select('id, name, category, menu_group, price, cost')
+      .eq('is_active', true)
+      .order('sort_order')
+      .then(({ data }) => {
+        setMenuItems(data ?? [])
+      })
   }, [])
 
   const fetchSales = useCallback(async () => {
@@ -93,66 +141,132 @@ export default function SalesPage() {
   }, [fetchSales])
 
   const handleSave = async () => {
-    if (!form.amount || !form.date) return
+    if (items.length === 0) {
+      setSaveError('明細を入力してください')
+      return
+    }
+
+    setSaveError(null)
     setSaving(true)
 
-    const payload = {
-      date: form.date,
-      time: form.time,
-      amount: parseInt(form.amount),
-      pay_method: form.pay_method,
-      category: form.category || null,
-      table_no: form.table_no || null,
-      notes: form.notes || null,
-      lunch_count: parseInt(form.lunch_count) || 0,
-      dinner_count: parseInt(form.dinner_count) || 0,
-      user_id: userId,
-      customer_id: form.customer_id || null,
+    const rpcItems = items.map((i) => ({
+      menu_item_id: i.menu_item_id,
+      item_name: i.item_name,
+      qty: Number(i.qty),
+      unit_price: Number(i.unit_price),
+      unit_cost: toNullableNumber(i.unit_cost),
+      subtotal: Number(i.subtotal),
+    }))
 
-    }
-
-    if (!editingId && form.customer_id) {
-      await supabase.rpc('increment_visit_count', { cust_id: form.customer_id })
-    }
-
-    if (editingId) {
-      const { data } = await supabase
-        .from('sales')
-        .update(payload)
-        .eq('id', editingId)
-        .select()
-      if (data) setSales((prev) => prev.map((s) => (s.id === editingId ? data[0] : s)))
-    } else {
-      await supabase.from('sales').insert(payload)
-    }
+    const { error } = await supabase.rpc('save_sale_with_items', {
+      p_sale_id: editingId,
+      p_date: form.date,
+      p_time: form.time,
+      p_discount: toNumberOrZero(discount),
+      p_pay_method: form.pay_method,
+      p_table_no: form.table_no,
+      p_notes: form.notes,
+      p_lunch_count: Number(form.lunch_count || 0),
+      p_dinner_count: Number(form.dinner_count || 0),
+      p_customer_id: form.customer_id || null,
+      p_user_id: userId,
+      p_items: rpcItems,
+    })
 
     setSaving(false)
+
+    if (error) {
+      setSaveError(error.message)
+      return
+    }
+
     setShowForm(false)
     setEditingId(null)
     setForm(emptyForm())
+    setItems([])
+    setDiscount(0)
   }
 
-  const handleEdit = (s: Sale) => {
+  const handleEdit = async (s: Sale) => {
     setEditingId(s.id)
     setForm({
       date: s.date,
       time: s.time,
-      amount: String(s.amount),
       pay_method: s.pay_method,
-      category: s.category ?? 'その他',
       table_no: s.table_no ?? '',
       notes: s.notes ?? '',
       lunch_count: String(s.lunch_count ?? ''),
       dinner_count: String(s.dinner_count ?? ''),
       customer_id: (s as any).customer_id ?? '',
     })
+    setItems([])
+    setDiscount((s as any).discount ?? 0)
+    setSaveError(null)
     setShowForm(true)
+
+    const { data, error } = await supabase
+      .from('sale_items')
+      .select('menu_item_id, item_name, qty, unit_price, unit_cost, subtotal')
+      .eq('sale_id', s.id)
+
+    if (error) {
+      console.error('sale_items fetch error:', error)
+      setSaveError('明細の読み込みに失敗しました')
+      return
+    }
+
+    setItems(
+      (data ?? []).map((row) => ({
+        menu_item_id: row.menu_item_id,
+        item_name: row.item_name,
+        qty: Number(row.qty),
+        unit_price: Number(row.unit_price),
+        unit_cost: row.unit_cost == null ? null : Number(row.unit_cost),
+        subtotal: Number(row.subtotal),
+      }))
+    )
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('この売上記録を削除しますか？')) return
     await supabase.from('sales').delete().eq('id', id)
   }
+
+  const handleTapMenuItem = (m: MenuItem) => {
+    setItems((prev) => {
+      const idx = prev.findIndex((i) => i.menu_item_id === m.id)
+      if (idx !== -1) {
+        const next = [...prev]
+        const qty = next[idx].qty + 1
+        next[idx] = { ...next[idx], qty, subtotal: qty * next[idx].unit_price }
+        return next
+      }
+      return [
+        ...prev,
+        {
+          menu_item_id: m.id,
+          item_name: m.name,
+          qty: 1,
+          unit_price: m.price,
+          unit_cost: m.cost,
+          subtotal: m.price,
+        },
+      ]
+    })
+  }
+
+  const handleItemQtyChange = (index: number, qty: number) => {
+    setItems((prev) =>
+      prev.map((i, idx) => (idx === index ? { ...i, qty, subtotal: qty * i.unit_price } : i))
+    )
+  }
+
+  const handleRemoveItem = (index: number) => {
+    setItems((prev) => prev.filter((_, idx) => idx !== index))
+  }
+
+  const itemsTotal = items.reduce((sum, i) => sum + i.subtotal, 0)
+  const checkoutTotal = itemsTotal - discount
 
   const totalAmount = sales.reduce((sum, s) => sum + s.amount, 0)
 
@@ -166,7 +280,7 @@ export default function SalesPage() {
       <div className="flex items-center justify-between">
         <h1 className="page-title">売上記録</h1>
         <button
-          onClick={() => { setEditingId(null); setForm(emptyForm()); setShowForm(true) }}
+          onClick={() => { setEditingId(null); setForm(emptyForm()); setItems([]); setDiscount(0); setSaveError(null); setShowForm(true) }}
           className="btn-primary flex items-center gap-1 text-sm py-1.5"
         >
           <Plus size={16} />
@@ -282,16 +396,79 @@ export default function SalesPage() {
             </div>
             <div className="p-4 space-y-3">
               <div>
-                <label className="text-xs font-medium text-gray-600 mb-1 block">金額 (円) *</label>
-                <input
-                  type="number"
-                  min="0"
-                  className="input-field text-lg font-bold"
-                  placeholder="0"
-                  value={form.amount}
-                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
-                />
+                <label className="text-xs font-medium text-gray-600 mb-2 block">品目から追加</label>
+                <div className="grid grid-cols-3 gap-1.5 max-h-64 overflow-y-auto p-1 border border-gray-100 rounded-lg">
+                  {menuItems.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => handleTapMenuItem(m)}
+                      className={clsx(
+                        'border rounded-lg px-2 py-2 text-left transition-colors',
+                        menuItemButtonClass(m.category)
+                      )}
+                    >
+                      <p className="text-xs font-semibold leading-tight truncate">{m.name}</p>
+                      <p className="text-xs opacity-70 mt-0.5">¥{m.price.toLocaleString()}</p>
+                    </button>
+                  ))}
+                </div>
+
+                {items.length > 0 && (
+                  <div className="mt-3 space-y-1.5">
+                    {items.map((i, idx) => (
+                      <div key={`${i.menu_item_id ?? 'unlinked'}-${idx}`} className="flex items-center gap-2 text-sm">
+                        <span className="flex-1 min-w-0 truncate">{i.item_name}</span>
+                        <span className="text-xs text-gray-400 shrink-0">
+                          ¥{i.unit_price.toLocaleString()}
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          className="input-field w-16 text-center shrink-0"
+                          value={i.qty}
+                          onChange={(e) =>
+                            handleItemQtyChange(idx, parseInt(e.target.value) || 0)
+                          }
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveItem(idx)}
+                          className="text-gray-300 hover:text-red-400 transition-colors p-1 shrink-0"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-3 pt-3 border-t border-gray-100 space-y-1.5">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-500">明細合計</span>
+                    <span className="font-semibold text-gray-900">
+                      ¥{itemsTotal.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <span className="text-gray-500">値引き</span>
+                    <input
+                      type="number"
+                      min="0"
+                      className="input-field w-28 text-right"
+                      value={discount}
+                      onChange={(e) => setDiscount(parseInt(e.target.value) || 0)}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-gray-700">お会計</span>
+                    <span className="font-bold text-gray-900 text-base">
+                      ¥{checkoutTotal.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
               </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-medium text-gray-600 mb-1 block">日付</label>
@@ -331,20 +508,6 @@ export default function SalesPage() {
                   ))}
                 </div>
               </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600 mb-1 block">カテゴリ</label>
-                <div className="relative">
-                  <select
-                    className="input-field appearance-none pr-7"
-                    value={form.category}
-                    onChange={(e) => setForm({ ...form, category: e.target.value })}
-                  >
-                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                </div>
-              </div>
-
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-medium text-gray-600 mb-1 block">ランチ人数</label>
@@ -404,13 +567,16 @@ export default function SalesPage() {
                   onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 />
               </div>
+              {saveError && (
+                <p className="text-xs text-red-500">{saveError}</p>
+              )}
               <div className="flex gap-2 pt-2">
                 <button onClick={() => { setShowForm(false); setEditingId(null) }} className="btn-secondary flex-1">
                   キャンセル
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={saving || !form.amount}
+                  disabled={saving}
                   className="btn-primary flex-1"
                 >
                   {saving ? (editingId ? '更新中...' : '登録中...') : (editingId ? '更新' : '登録')}

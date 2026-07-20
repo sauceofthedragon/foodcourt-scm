@@ -76,7 +76,8 @@ end $$;
 --
 --    sort_order は10刻み。後から間に挿し込めるようにするため。
 -- ------------------------------------------------------------
--- ※初回実行済み。再実行時は絶対に有効化しないこと（sale_items から参照されるため）
+-- ※2026-07-21、sale_items からの参照が発生済み。この delete は使用不可。
+-- ※有効化すると sale_items.menu_item_id が全て null になり、品目別分析が壊れる。
 -- delete from menu_items;
 
 insert into menu_items (name, category, menu_group, price, cost, sort_order) values
