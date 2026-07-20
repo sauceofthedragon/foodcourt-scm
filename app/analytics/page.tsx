@@ -61,6 +61,12 @@ type RepeatMetrics = {
   new_repeaters: number
 }
 
+type VisitComposition = {
+  new_sales: number
+  repeat_sales: number
+  total_sales: number
+}
+
 const PIE_COLORS = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444']
 
 // 分母が0のときはゼロ除算を避けて「—」を返す
@@ -94,6 +100,7 @@ export default function AnalyticsPage() {
   // ── リピート分析 state ──────────────────────────────────
   const [repeatMonth, setRepeatMonth] = useState(format(new Date(), 'yyyy-MM'))
   const [repeatMetrics, setRepeatMetrics] = useState<RepeatMetrics | null>(null)
+  const [visitComposition, setVisitComposition] = useState<VisitComposition | null>(null)
   const [repeatLoading, setRepeatLoading] = useState(true)
 
   const recentYears = Array.from({ length: 5 }, (_, i) =>
@@ -293,22 +300,32 @@ export default function AnalyticsPage() {
     setRepeatLoading(true)
     const monthStart = startOfMonth(new Date(repeatMonth + '-01'))
     const monthEnd = endOfMonth(monthStart)
+    const p_start = format(monthStart, 'yyyy-MM-dd')
+    const p_end = format(monthEnd, 'yyyy-MM-dd')
 
-    const { data, error } = await supabase.rpc('repeat_metrics', {
-      p_start: format(monthStart, 'yyyy-MM-dd'),
-      p_end: format(monthEnd, 'yyyy-MM-dd'),
-    })
+    const [metricsResult, compositionResult] = await Promise.all([
+      supabase.rpc('repeat_metrics', { p_start, p_end }),
+      supabase.rpc('visit_composition', { p_start, p_end }),
+    ])
 
-    if (error) {
-      console.error('repeat_metrics RPC error:', error)
+    if (metricsResult.error) {
+      console.error('repeat_metrics RPC error:', metricsResult.error)
       setRepeatMetrics(null)
-      setRepeatLoading(false)
-      return
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const row = (metricsResult.data as any[] | null)?.[0]
+      setRepeatMetrics(row ? (row as RepeatMetrics) : null)
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const row = (data as any[] | null)?.[0]
-    setRepeatMetrics(row ? (row as RepeatMetrics) : null)
+    if (compositionResult.error) {
+      console.error('visit_composition RPC error:', compositionResult.error)
+      setVisitComposition(null)
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const row = (compositionResult.data as any[] | null)?.[0]
+      setVisitComposition(row ? (row as VisitComposition) : null)
+    }
+
     setRepeatLoading(false)
   }, [repeatMonth])
 
@@ -336,9 +353,11 @@ export default function AnalyticsPage() {
   const chartData: any[] = viewMode === 'daily' ? dailyData : monthlyData
   const xKey = 'label'
 
-  const linkedSales = repeatMetrics?.linked_sales ?? 0
-  const totalSales = repeatMetrics?.total_sales ?? 0
-  const showLinkWarning = totalSales > 0 && linkedSales / totalSales < 0.5
+  const compTotalSales = visitComposition?.total_sales ?? 0
+  const compNewSales = visitComposition?.new_sales ?? 0
+  const compRepeatSales = visitComposition?.repeat_sales ?? 0
+  const newSalesPct = compTotalSales > 0 ? (compNewSales / compTotalSales) * 100 : 0
+  const repeatSalesPct = compTotalSales > 0 ? (compRepeatSales / compTotalSales) * 100 : 0
 
   const formatYAxis = (value: number) => {
     if (value >= 10000) return `${(value / 10000).toFixed(0)}万`
@@ -572,50 +591,74 @@ export default function AnalyticsPage() {
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500" />
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="card">
-              <p className="text-xs text-gray-500 mb-1">期間内リピート率</p>
-              <p className="text-xl font-bold text-gray-900">
-                {formatPercent(repeatMetrics?.repeaters ?? 0, repeatMetrics?.visitors ?? 0)}
+          <>
+            {/* 会計構成バー */}
+            <div className="mb-4">
+              <p className="text-base font-semibold text-gray-900 mb-2">
+                会計構成（全{compTotalSales}件）
               </p>
-              <p className="text-xs text-gray-400 mt-1">
-                再来店 {repeatMetrics?.repeaters ?? 0}人 / 来店 {repeatMetrics?.visitors ?? 0}人
-              </p>
-            </div>
-            <div className="card">
-              <p className="text-xs text-gray-500 mb-1">新規リピーター転換率</p>
-              <p className="text-xl font-bold text-gray-900">
-                {formatPercent(repeatMetrics?.new_repeaters ?? 0, repeatMetrics?.new_visitors ?? 0)}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                新規 {repeatMetrics?.new_visitors ?? 0}人 中 {repeatMetrics?.new_repeaters ?? 0}人が再来店
-              </p>
-            </div>
-            <div className="card">
-              <p className="text-xs text-gray-500 mb-1">既存顧客比率</p>
-              <p className="text-xl font-bold text-gray-900">
-                {formatPercent(repeatMetrics?.returning_customers ?? 0, repeatMetrics?.visitors ?? 0)}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                うち期間前来店あり {repeatMetrics?.returning_customers ?? 0}人
-              </p>
-            </div>
-            <div className="card">
-              <p className="text-xs text-gray-500 mb-1">顧客紐付け率</p>
-              <p className="text-xl font-bold text-gray-900">
-                {formatPercent(linkedSales, totalSales)}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                {linkedSales} / {totalSales} 件
-              </p>
-              {showLinkWarning && (
-                <p className="text-xs text-amber-600 mt-1">
-                  ⚠ 紐付け率が低いため、上記指標の信頼性は限定的です
-                </p>
+              {compTotalSales > 0 ? (
+                <>
+                  <div className="flex h-3 w-full rounded-full overflow-hidden mb-2">
+                    <div className="bg-emerald-500" style={{ width: `${newSalesPct}%` }} />
+                    <div className="bg-blue-500" style={{ width: `${repeatSalesPct}%` }} />
+                  </div>
+                  <div className="flex items-center gap-4 text-xs flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+                      <span className="text-gray-600">
+                        新規（推定） {compNewSales}件 ({newSalesPct.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" />
+                      <span className="text-gray-600">
+                        リピート {compRepeatSales}件 ({repeatSalesPct.toFixed(1)}%)
+                      </span>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">データがありません</p>
               )}
             </div>
-          </div>
+
+            {/* サマリーカード */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="card">
+                <p className="text-xs text-gray-500 mb-1">会計リピート率</p>
+                <p className="text-xl font-bold text-gray-900">
+                  {formatPercent(compRepeatSales, compTotalSales)}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  リピート {compRepeatSales}件 / 全 {compTotalSales}件
+                </p>
+              </div>
+              <div className="card">
+                <p className="text-xs text-gray-500 mb-1">期間内リピート率</p>
+                <p className="text-xl font-bold text-gray-900">
+                  {formatPercent(repeatMetrics?.repeaters ?? 0, repeatMetrics?.visitors ?? 0)}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  再来店 {repeatMetrics?.repeaters ?? 0}人 / 来店 {repeatMetrics?.visitors ?? 0}人
+                </p>
+              </div>
+              <div className="card">
+                <p className="text-xs text-gray-500 mb-1">新規リピーター転換率</p>
+                <p className="text-xl font-bold text-gray-900">
+                  {formatPercent(repeatMetrics?.new_repeaters ?? 0, repeatMetrics?.new_visitors ?? 0)}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  新規 {repeatMetrics?.new_visitors ?? 0}人 中 {repeatMetrics?.new_repeaters ?? 0}人が再来店
+                </p>
+              </div>
+            </div>
+          </>
         )}
+
+        <p className="text-xs text-gray-500 mt-3">
+          ※ 顧客未紐付けの会計を新規として集計しています
+        </p>
       </div>
 
       {/* ── 来客数トレンド ────────────────────────────── */}
