@@ -57,6 +57,8 @@ type RepeatMetrics = {
   returning_customers: number
   linked_sales: number
   total_sales: number
+  new_visitors: number
+  new_repeaters: number
 }
 
 const PIE_COLORS = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444']
@@ -570,7 +572,7 @@ export default function AnalyticsPage() {
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500" />
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="card">
               <p className="text-xs text-gray-500 mb-1">期間内リピート率</p>
               <p className="text-xl font-bold text-gray-900">
@@ -578,6 +580,15 @@ export default function AnalyticsPage() {
               </p>
               <p className="text-xs text-gray-400 mt-1">
                 再来店 {repeatMetrics?.repeaters ?? 0}人 / 来店 {repeatMetrics?.visitors ?? 0}人
+              </p>
+            </div>
+            <div className="card">
+              <p className="text-xs text-gray-500 mb-1">新規リピーター転換率</p>
+              <p className="text-xl font-bold text-gray-900">
+                {formatPercent(repeatMetrics?.new_repeaters ?? 0, repeatMetrics?.new_visitors ?? 0)}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                新規 {repeatMetrics?.new_visitors ?? 0}人 中 {repeatMetrics?.new_repeaters ?? 0}人が再来店
               </p>
             </div>
             <div className="card">
