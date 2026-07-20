@@ -1,6 +1,12 @@
 # フードコート統合管理システム 仕様書
 
-現行コードベース（2026-07-11時点）を解析して起こした仕様書。ソースコードが正であり、本書はその写像。仕様変更時はコードとあわせて本書も更新すること。
+現行コードベース（2026-07-21時点）を解析して起こした仕様書。ソースコードが正であり、本書はその写像。仕様変更時はコードとあわせて本書も更新すること。
+
+**改訂履歴**
+| 日付 | 内容 |
+|---|---|
+| 2026-07-11 | 初版（コードベース解析） |
+| 2026-07-21 | リピート分析機能を反映（6章にVIEW/RPC追加、7.3・7.6を改訂、8章を再構成） |
 
 ## 1. 概要
 
@@ -84,23 +90,57 @@ supabase/schema.sql          - DBスキーマ定義（※実データベース�
 |---|---|---|
 | `customers` | id, name, phone, email, notes, visit_count, created_at | 顧客台帳 |
 | `reservations` | id, customer_id(FK→customers, on delete set null), customer_name, date, time, party, table_no, status, notes, created_at | 予約。`status` は `confirmed/cancelled/completed/no_show` のCHECK制約 |
-| `sales` | id, date, time, amount, pay_method, category, table_no, notes, created_at, lunch_count, dinner_count, user_id(FK→auth.users, not null, default auth.uid()), customer_id(FK→customers) | 売上。`pay_method` は `cash/card/qr/other` のCHECK制約 |
+| `sales` | id, date, time, amount, pay_method, category, table_no, notes, created_at | 売上。`pay_method` は `cash/card/qr/other` のCHECK制約 |
 | `inventory` | id, name, category, unit, stock, min_stock, supplier, unit_cost, created_at | 在庫品目。`stock`/`min_stock` は numeric（小数可） |
 | `purchases` | id, date, item_id(FK→inventory, on delete set null), item_name, qty, unit_cost, total, supplier, notes, created_at | 仕入れ記録 |
-| `user_profiles` | user_id(text, PK), email(text, unique) | ログインID→メールのマッピング（`app/login/page.tsx`が使用） |
 
 - 全テーブルで Realtime（`supabase_realtime` publication）が有効
 - インデックス: `reservations(date)`, `sales(date)`, `purchases(date)`, `purchases(item_id)`
-- 全6テーブルでRLS有効化済み。`customers`/`reservations`/`inventory`/`purchases`は`authenticated`ロールなら全操作可（`auth_only`ポリシー）、`sales`は`auth.uid() = user_id`の行のみ操作可、`user_profiles`は`anon`ロールへの`SELECT`のみ許可（INSERT/UPDATE/DELETEポリシーは無く、service_role経由でのみレコード作成可能）
-- RPC関数 `increment_visit_count(cust_id uuid)`（`SECURITY DEFINER`）: 売上登録時の来店回数加算に使用。フロント側では計算せずRPC経由のみで加算する設計（二重加算防止）
 
-### schema.sqlと実装(コード)の整合性（2026-07-13時点で確認・同期済み）
+### ⚠️ schema.sqlと実装(コード)の不整合
 
-2026-07-13、本番Supabaseプロジェクトのスキーマを読み取り専用クエリ（`information_schema`/`pg_catalog`）で照合し、`supabase/schema.sql`を実態に同期した（旧版で未反映だった`user_profiles`テーブル、`increment_visit_count`RPC、`sales`の`customer_id`/`user_id`/`lunch_count`/`dinner_count`列、RLSポリシー全般を反映済み）。詳細な照合過程・推定に留まる項目（`sales.user_id`の参照先テーブル、インデックス定義、Realtime publication設定は独立検証できず既存記載を引き継ぎ）は`supabase/migrations/00000000000000_prod_baseline.sql`の注記を参照。
+以下はアプリコードが参照しているが `schema.sql` に定義がない列・テーブル・RPC。Supabase上で直接追加された可能性が高く、**このファイルだけを見て別環境を再構築すると機能しない**。
+
+| 種別 | 名前 | 参照箇所 | 内容 |
+|---|---|---|---|
+| テーブル | `user_profiles` | `app/login/page.tsx` | `user_id` → `email` のログインID解決に使用 |
+| RPC関数 | `increment_visit_count(cust_id)` | `app/sales/page.tsx` | 売上登録時に顧客の来店回数を加算（コミット「顧客来店数の自動加算機能」に対応） |
+| sales列 | `customer_id` | `app/sales/page.tsx` | 売上と顧客の紐付け（`database.types.ts`のSale型にも未定義、`(s as any).customer_id`でキャストして参照） |
+| sales列 | `user_id` | `app/sales/page.tsx` | 登録操作を行ったユーザーのID |
+| sales列 | `lunch_count`, `dinner_count` | `app/sales/page.tsx`, `app/analytics/page.tsx` | ランチ/ディナー来客数（`database.types.ts`には型定義あり、`schema.sql`には列定義なし） |
+
+### VIEW / RPC（2026-07-21 追加分）
+
+すべて `security invoker`（＝アプリユーザーの権限で動作し、RLSを迂回しない）で定義。**いずれも読み取り専用で、書き込みは行わない**。
+
+| 種別 | 名前 | 参照画面 | 返却/内容 |
+|---|---|---|---|
+| VIEW | `customer_stats` | `/customers` | `customer_id, first_visit_date, last_visit_date, actual_visit_count, total_amount`。`customers` に `sales` を `left join` して顧客ごとに集約 |
+| RPC | `visit_composition(p_start date, p_end date)` | `/analytics` | `new_sales, repeat_sales, total_sales`。`sales.customer_id is null` を新規、`not null` をリピートとして会計件数を数える |
+| RPC | `repeat_metrics(p_start date, p_end date)` | `/analytics` | `visitors, repeaters, returning_customers, linked_sales, total_sales, new_visitors, new_repeaters`。うち `returning_customers` / `linked_sales` は**現在どの画面からも参照されていない**（定義変更で不要化したが、再検討時に備え関数側は残置） |
+
+`customer_stats` VIEW 定義：
+
+```sql
+create or replace view customer_stats
+with (security_invoker = on)
+as
+select
+  c.id                       as customer_id,
+  min(s.date)                as first_visit_date,
+  max(s.date)                as last_visit_date,
+  count(s.id)                as actual_visit_count,
+  coalesce(sum(s.amount), 0) as total_amount
+from customers c
+left join sales s on s.customer_id = c.id
+group by c.id;
+```
+
+**注意**: これらも `supabase/schema.sql` に未反映。8章参照。
 
 ### database.types.ts 上の型定義
 
-`Sale` 型など `lib/database.types.ts` の型は、`customer_id`/`user_id`が依然として未定義（`app/sales/page.tsx`では`(s as any).customer_id`でキャストして参照）。schema.sqlとの同期は完了したが、TypeScript型定義側の追従はまだ行っていない。
+`Sale` 型など `lib/database.types.ts` の型は上記の一部不整合を先取りして反映済み（`lunch_count`/`dinner_count`はoptionalで定義済みだが`customer_id`/`user_id`は未定義）。型定義・schema.sql・実DBの3者で世代がずれている状態。
 
 ## 7. 画面仕様
 
@@ -132,6 +172,11 @@ supabase/schema.sql          - DBスキーマ定義（※実データベース�
 
 - 一覧: 名前・電話・メールの部分一致検索、件数表示
 - 来店5回以上で★アイコン表示
+- **最終来店日**: `customer_stats` VIEW の `last_visit_date` を表示（＝顧客に紐付いた `sales` の最新日付）
+- **来店頻度**（回/月）: `visit_count ÷ 経過月数` を表示
+  - 経過月数は `customers.created_at` を起点とし、30.44日 = 1ヶ月で換算
+  - 分母は最低1ヶ月に切り上げ（登録直後の値が発散しないため）
+  - `visit_count <= 1` または登録から1ヶ月未満の場合は `—` を表示
 - カードクリックで詳細モーダル（電話は`tel:`リンク、メールは`mailto:`リンク、来店回数、登録日）
 - 詳細モーダルから編集・削除が可能
 - 新規/編集フォーム項目: 名前*, 電話番号, メールアドレス, 来店回数, メモ
@@ -172,7 +217,7 @@ supabase/schema.sql          - DBスキーマ定義（※実データベース�
 
 ### 7.6 売上分析（`/analytics`）
 
-グラフによる可視化専用画面。2つの独立したセクションを持つ。
+グラフによる可視化専用画面。3つの独立したセクションを持つ（上から「売上」→「リピート分析」→「来客数トレンド」）。
 
 **売上セクション**
 - 表示切替: 日別（月選択）/ 月別（直近12ヶ月固定）
@@ -180,15 +225,73 @@ supabase/schema.sql          - DBスキーマ定義（※実データベース�
 - 棒グラフ（日別/月別売上）、折れ線グラフ（売上推移）
 - カテゴリ別円グラフ（日別表示時のみ、割合%と金額を凡例に併記）
 
+**リピート分析セクション**（売上セクションと来客数トレンドの間に配置）
+- 月選択UI（デフォルト今月）。データは `visit_composition` / `repeat_metrics` RPCから取得
+- 表示順: 月選択 → 会計構成バー → カード3枚 → 注記
+
+| 表示要素 | 定義 | 出所 |
+|---|---|---|
+| 会計構成バー（主役） | 新規件数 / リピート件数を横バーで構成比表示 | `visit_composition` |
+| 会計リピート率 | `repeat_sales ÷ total_sales`（会計＝組ベース） | `visit_composition` |
+| 期間内リピート率 | `repeaters ÷ visitors`（顧客の実人数ベース） | `repeat_metrics` |
+| 新規リピーター転換率 | `new_repeaters ÷ new_visitors` | `repeat_metrics` |
+
+- 画面注記: 「※ 顧客未紐付けの会計を新規として集計しています」
+
+**「未紐付け = 新規」とする定義について（意思決定の記録）**
+
+`sales.customer_id` が `null` の会計を「新規」として集計している。根拠は「顧客レコードが存在する時点で、その人は過去に一度は来店し登録されている」という運用実態。
+
+この定義から必然的に導かれること：
+- 「リピート率」と「顧客紐付け率」は**定義上つねに同一の数値になる**。そのため紐付け率カード・既存顧客比率カードは意図的に設置していない（同じ数字を2箇所に出すと後から誤解を生むため）
+- 登録済み常連の会計で顧客を選び忘れると「新規」に計上されるため、**新規が実態より多めに出る癖**を持つ。裏返しとして新規リピーター転換率は**低めに出る癖**を持つ
+- 現在ワンオペのため入力の癖が一人分に閉じ、月次比較の一貫性は保たれる。**複数スタッフ体制になると人による紐付け率の差でこの前提が崩れる**
+- 紐付け運用を改善すると、顧客行動が変化していなくてもリピート率が上昇する。指標の変動要因を切り分けるには紐付け率を別途（画面外で）追跡する必要がある
+
 **来客数トレンドセクション**（売上セクションとは独立したstate/データ取得）
 - 表示切替: 日別（月選択）/ 月別（年選択、直近5年分をプルダウン提供）
 - `sales.lunch_count` / `dinner_count` を集計
-- サマリー3カード: 来店総数、ランチ計、ディナー計
+- サマリー3カード: **延べ来店数**、ランチ計、ディナー計
 - 折れ線グラフ（ランチ=青、ディナー=オレンジの2系列）
+- **「来店総数」から「延べ来店数」に表記変更済み**。リピート分析の会計件数（組）と単位が異なることを明示するため
+
+**単位の非互換について（既知の限界）**
+
+「今月の来店◯人のうち何人が新規か」は**現在の設計では算出できない**。
+
+| | 延べ来店数 | リピート分析の数値 |
+|---|---|---|
+| 出所 | `lunch_count + dinner_count` | `sales.customer_id` / 会計行 |
+| 単位 | 延べ来店人数 | 識別された実人数 / 会計組数 |
+
+紐付いた会計でも `customer_id` は代表者1名分のみ。4名組で来店した場合、同伴3名は延べ来店数には入るが顧客識別には入らない。**延べ来店数から人数ベースの内訳を導く経路が存在しない。** 会計（組）単位の分析に統一する方針を採り、人数ベースの内訳は現時点で断念している（既存データで完結し過去分も遡及できるため）。
 
 ## 8. 既知の課題・要検証事項
 
-- ~~schema.sqlの陳腐化~~：2026-07-13に本番スキーマと照合し解消済み（6章参照）
+### 優先度: 高
+
+- **Supabaseのデフォルト1000行制限による「沈黙する失敗」**: Supabaseのクエリはデフォルトで最大1000行しか返さない。売上を全件取得してJS側で集計する実装は、対象行数が1000を超えた瞬間に**エラーも警告も出ないまま集計値が壊れる**（RLS未設定時と同じ失敗様式）。
+  - リピート分析セクションはVIEW/RPCでDB側集計しているため構造的に発生しない
+  - **7.6の売上セクション・来客数トレンドは未対策**。月間の`sales`行数が1000件を超えた時点で顕在化する。同じ手法（RPC化）で移行可能
+- **schema.sqlの陳腐化**: 6章記載の通り、`user_profiles`テーブル・`increment_visit_count`関数・`sales`の`customer_id`/`user_id`/`lunch_count`/`dinner_count`列、および今回追加した`customer_stats` VIEW・`visit_composition`/`repeat_metrics` RPCがスキーマファイルに存在しない。別環境構築や障害復旧時に`schema.sql`だけでは不十分。**Supabase上の実スキーマをダンプしてファイルを同期することを推奨**
+
+### 優先度: 中
+
+- **`/sales` の顧客紐付けが任意プルダウン**: 現在の紐付け率は約46%。7.6の定義上、紐付け率の低さが即座に指標を壊すわけではないが、入力設計の問題であり精神論では改善しない
+- **`repeat_metrics` の未使用列**: `returning_customers` / `linked_sales` が画面から参照されていない。将来的に削除するか用途を確定するか要判断
+
+### 優先度: 低 / 積み残し
 - **予約と顧客の非連携**: 予約作成時`customer_id`は常に`null`固定。売上では顧客と紐付けて来店回数を自動加算する仕組みがあるが、予約側には同等の仕組みがない
 - **在庫連動は仕入れ記録のみ**: 販売による在庫減少ロジックは存在しない（`sales`登録時に`inventory.stock`を減算する処理が無い）。在庫は「仕入れ」でのみ増加し、実消費と連動していない
-- **型定義の追従遅れ**: `database.types.ts`の`Sale`型は`lunch_count`/`dinner_count`は定義済みだが`customer_id`/`user_id`は未反映（schema.sqlとの同期は完了済みだが、この型定義ファイルはまだ追従していない）。型安全性が部分的に効いていない
+- **型定義とschema.sqlの世代差**: `database.types.ts`は一部（`lunch_count`/`dinner_count`）を先取りしているが`customer_id`/`user_id`/`customer_stats`は未反映。`lib/supabase.ts` のクライアントが型なしのため実害は出ていないが、負債として残存
+
+## 9. 開発上の注意点（実測で確立したもの）
+
+- **Vercelは GitHub からビルドする**: ローカル修正は `git add → commit → push` しない限り本番に反映されない
+- **環境変数は二重管理**: `.env.local`（ローカル）と Vercelダッシュボード（本番）は完全に別系統
+- **SQL Editorで動いてもアプリで動くとは限らない**: SQL Editorは管理者権限で実行される。RLSの実効確認は必ずアプリからの実機テストで行う
+- **`create or replace function` は戻り値の列構成を変更できない**: `drop function if exists 関数名(引数型);` してから作り直す
+- **Tailwindの動的クラス名は効かない**: ビルド時にパージされるため、幅などの可変指定は `style={{ width: '53.8%' }}` のようにインラインstyleで書く
+- **長いSQLのコピー漏れ**: 途中で切れて貼ると `as $$` 付近で構文エラーになる。コピーボタンを使い、実行前に最終行が `$$;` で終わっているか目視確認する
+- **`.update()` には `.eq()` が必須**: 省略すると全行更新の危険がある
+- **Windowsのファイル書き込み**: CMDの `echo` はBOM/Shift-JISで文字化けを起こす。ファイル作成・編集はすべてClaude Code経由で行う

@@ -8,18 +8,27 @@ import {
   Users,
   ShoppingCart,
   Package,
+  UtensilsCrossed,
   BarChart2,
 } from 'lucide-react'
 import clsx from 'clsx'
 
+// showOnMobile: false の項目はボトムナビに出さない。
+// ボトムナビは flex-1 の等分割なので、項目を増やすほど1つあたりの幅が痩せる。
+// 10px の日本語ラベル（例「ダッシュボード」= 約70px）に対して、
+// 6項目・380px端末で1項目あたり63px。すでに余裕がない。
+// メニューマスタは週次のPC作業なので、モバイルからは外す。
 const navItems = [
-  { href: '/', label: 'ダッシュボード', icon: LayoutDashboard },
-  { href: '/reservations', label: '予約', icon: CalendarDays },
-  { href: '/customers', label: '顧客台帳', icon: Users },
-  { href: '/sales', label: '売上', icon: ShoppingCart },
-  { href: '/inventory', label: '在庫', icon: Package },
-  { href: '/analytics', label: '分析', icon: BarChart2 },
+  { href: '/', label: 'ダッシュボード', icon: LayoutDashboard, showOnMobile: true },
+  { href: '/reservations', label: '予約', icon: CalendarDays, showOnMobile: true },
+  { href: '/customers', label: '顧客台帳', icon: Users, showOnMobile: true },
+  { href: '/sales', label: '売上', icon: ShoppingCart, showOnMobile: true },
+  { href: '/inventory', label: '在庫', icon: Package, showOnMobile: true },
+  { href: '/menu', label: 'メニュー', icon: UtensilsCrossed, showOnMobile: false },
+  { href: '/analytics', label: '分析', icon: BarChart2, showOnMobile: true },
 ]
+
+const mobileNavItems = navItems.filter((item) => item.showOnMobile)
 
 export default function Navigation() {
   const pathname = usePathname()
@@ -58,7 +67,7 @@ export default function Navigation() {
       {/* Mobile bottom navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-gray-200 safe-area-pb">
         <div className="flex">
-          {navItems.map(({ href, label, icon: Icon }) => {
+          {mobileNavItems.map(({ href, label, icon: Icon }) => {
             const active = pathname === href
             return (
               <Link
