@@ -19,6 +19,14 @@ function getClient(): BrowserClient {
     )
   }
 
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      console.info(`[supabase] 接続先: ${new URL(url).hostname}`)
+    } catch {
+      // URL解析に失敗しても致命的ではないため無視
+    }
+  }
+
   _client = createBrowserClient(url, key)
   return _client
 }

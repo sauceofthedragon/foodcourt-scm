@@ -1,0 +1,4 @@
+{
+  "note": "デモ用Supabaseプロジェクトのホスト名。seedスクリプトの許可リストとして使用する。デモURLを受領したら hostname を実際の値に書き換えること。プレースホルダーのままではseedスクリプトは実行できない。",
+  "hostname": "vtbfcfkrmosaeusqqanq.supabase.co"
+}

@@ -1,6 +1,23 @@
--- フードコート統合管理システム スキーマ
--- 2026-07-13時点で本番プロジェクトの実際の定義と照合・同期済み
--- （詳細な照合手順・注記は supabase/migrations/00000000000000_prod_baseline.sql を参照）
+-- フードコート統合管理システム スキーマ（本番プロジェクトから再構成）
+--
+-- 生成方法についての注記：
+-- Docker Desktop未導入のため `supabase db dump --linked` は使用できず、
+-- 本番プロジェクトのSQL Editorで以下6種の読み取り専用クエリを実行した結果から
+-- 手動で再構成した（2026-07-13時点）。
+--   1) information_schema.columns（テーブル・カラム定義）
+--   2) information_schema.table_constraints + key_column_usage（制約・FK）
+--   3) pg_constraint（CHECK制約の定義）
+--   4) pg_tables.rowsecurity（RLS有効化状況）
+--   5) pg_policies（RLSポリシー本文）
+--   6) pg_proc + pg_get_functiondef（関数定義）
+--
+-- 以下は「推定」であり、独立したクエリでは未検証：
+--   - sales.user_id の参照先（auth.users(id)）: FKの参照先スキーマが auth のため
+--     constraint_column_usage ビューでは解決できなかった。auth.uid()をデフォルト値に
+--     している挙動と、Supabaseの標準的な運用パターンから auth.users(id) 参照と判断。
+--   - インデックス定義: 個別に確認しておらず、既存の supabase/schema.sql の内容を
+--     そのまま引き継いでいる（挙動に影響しないため、デモ環境の動作には支障なし）。
+--   - Realtime publication設定: 同上、独立確認はしていない。
 
 -- 顧客台帳
 create table if not exists customers (
@@ -86,8 +103,7 @@ create policy auth_only on purchases
   using (true)
   with check (true);
 
--- 売上記録（customer_id/user_id/lunch_count/dinner_countは
--- 「顧客来店数の自動加算機能」導入時に追加された列。以前のschema.sqlには未反映だった）
+-- 売上記録
 create table if not exists sales (
   id uuid default gen_random_uuid() primary key,
   date date not null,
@@ -112,8 +128,7 @@ create policy "users can manage own records" on sales
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
--- ログインID→メールのマッピング（app/login/page.tsxがIDからメールを引くために使用）
--- 以前のschema.sqlには未反映だった
+-- ログインID→メールのマッピング（ログイン画面がIDからメールを引くために使用）
 create table if not exists user_profiles (
   user_id text primary key,
   email text not null unique
@@ -129,7 +144,6 @@ create policy "allow anon select" on user_profiles
   using (true);
 
 -- 来店回数の加算（フロント側での二重加算防止のためSECURITY DEFINER RPC経由のみ）
--- 以前のschema.sqlには未反映だった
 create or replace function public.increment_visit_count(cust_id uuid)
 returns void
 language sql
@@ -138,14 +152,14 @@ as $function$
   update customers set visit_count = visit_count + 1 where id = cust_id;
 $function$;
 
--- Realtime有効化
+-- Realtime有効化（推定・未独立検証、既存schema.sqlの記載を引き継ぎ）
 alter publication supabase_realtime add table customers;
 alter publication supabase_realtime add table reservations;
 alter publication supabase_realtime add table sales;
 alter publication supabase_realtime add table inventory;
 alter publication supabase_realtime add table purchases;
 
--- インデックス
+-- インデックス（推定・未独立検証、既存schema.sqlの記載を引き継ぎ）
 create index if not exists idx_reservations_date on reservations(date);
 create index if not exists idx_sales_date on sales(date);
 create index if not exists idx_purchases_date on purchases(date);

@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase'
 import type { Customer } from '@/lib/database.types'
 import { Plus, Search, X, Phone, Mail, FileText, Star } from 'lucide-react'
 import { format } from 'date-fns'
+import { ja } from 'date-fns/locale'
 
 type FormData = {
   name: string
@@ -24,6 +25,40 @@ const emptyForm: FormData = {
   visit_count: '0',
 }
 
+// customer_stats VIEW の1行分（INSERT/UPDATE対象ではない集計専用データ）
+type CustomerStats = {
+  customer_id: string
+  first_visit_date: string | null
+  last_visit_date: string | null
+  actual_visit_count: number
+}
+
+// 来店頻度（1ヶ月あたりの来店回数）を計算する
+// - 30.44日 = 1ヶ月として経過月数を算出
+// - 経過月数が1未満の場合は1に切り上げる
+// - visit_countが1以下、または登録から1ヶ月未満の場合はnull（算出不可）
+function calcVisitFrequency(customer: Pick<Customer, 'created_at' | 'visit_count'>): number | null {
+  const daysElapsed = (Date.now() - new Date(customer.created_at).getTime()) / (1000 * 60 * 60 * 24)
+  const monthsElapsedRaw = daysElapsed / 30.44
+  const monthsElapsed = monthsElapsedRaw < 1 ? 1 : monthsElapsedRaw
+
+  if (customer.visit_count <= 1 || monthsElapsedRaw < 1) {
+    return null
+  }
+
+  return Math.round((customer.visit_count / monthsElapsed) * 10) / 10
+}
+
+function formatVisitFrequency(freq: number | null): string {
+  return freq !== null ? `${freq}回/月` : '—'
+}
+
+// last_visit_date（yyyy-MM-dd形式の日付文字列）を M月D日(曜) 表記に整形する
+function formatLastVisit(dateStr: string | null | undefined): string {
+  if (!dateStr) return '—'
+  return format(new Date(`${dateStr}T00:00:00`), 'M月d日(E)', { locale: ja })
+}
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(true)
@@ -33,6 +68,7 @@ export default function CustomersPage() {
   const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
   const [detailCustomer, setDetailCustomer] = useState<Customer | null>(null)
+  const [statsMap, setStatsMap] = useState<Map<string, CustomerStats>>(new Map())
 
   const fetchCustomers = useCallback(async () => {
     const { data } = await supabase
@@ -40,6 +76,13 @@ export default function CustomersPage() {
       .select('*')
       .order('created_at', { ascending: false })
     setCustomers(data ?? [])
+
+    // customer_stats はVIEWのため参照のみ（INSERT/UPDATEは行わない）
+    const { data: stats } = await supabase
+      .from('customer_stats')
+      .select('customer_id, first_visit_date, last_visit_date, actual_visit_count')
+    setStatsMap(new Map((stats ?? []).map((s: CustomerStats) => [s.customer_id, s])))
+
     setLoading(false)
   }, [])
 
@@ -155,6 +198,10 @@ export default function CustomersPage() {
                       <Star size={12} className="text-yellow-400 fill-yellow-400" />
                     )}
                   </div>
+                  <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
+                    <span>最終来店: {formatLastVisit(statsMap.get(c.id)?.last_visit_date)}</span>
+                    <span>来店頻度: {formatVisitFrequency(calcVisitFrequency(c))}</span>
+                  </div>
                   <div className="flex items-center gap-3 mt-0.5">
                     {c.phone && (
                       <span className="text-xs text-gray-500 flex items-center gap-1">
@@ -221,6 +268,10 @@ export default function CustomersPage() {
                 <span className="text-xs text-orange-400 ml-2">
                   (登録: {format(new Date(detailCustomer.created_at), 'yyyy/MM/dd')})
                 </span>
+              </div>
+              <div className="flex items-center gap-4 text-xs text-gray-500">
+                <span>最終来店: {formatLastVisit(statsMap.get(detailCustomer.id)?.last_visit_date)}</span>
+                <span>来店頻度: {formatVisitFrequency(calcVisitFrequency(detailCustomer))}</span>
               </div>
               <div className="flex gap-2 pt-1">
                 <button

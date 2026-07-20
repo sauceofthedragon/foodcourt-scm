@@ -1,0 +1,4 @@
+{
+  "note": "本番Supabaseプロジェクトのホスト名。seedスクリプトの拒否リストとして使用する。値そのものは機密ではない（anon keyと違い秘密情報を含まない識別子）が、変更時は要注意。",
+  "hostname": "ubhirekjjnlrwiwrqaqs.supabase.co"
+}

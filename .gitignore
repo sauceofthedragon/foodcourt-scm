@@ -38,5 +38,8 @@ next-env.d.ts
 .vercel
 .env*
 
+# デモ環境切替用テンプレート（実値は含まない）はgit管理下に置く
+!.env.demo.example
+
 # local dev log
 dev.log

@@ -51,7 +51,21 @@ type VisitorData = {
   dinner: number
 }
 
+type RepeatMetrics = {
+  visitors: number
+  repeaters: number
+  returning_customers: number
+  linked_sales: number
+  total_sales: number
+}
+
 const PIE_COLORS = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444']
+
+// 分母が0のときはゼロ除算を避けて「—」を返す
+function formatPercent(numerator: number, denominator: number): string {
+  if (!denominator) return '—'
+  return `${((numerator / denominator) * 100).toFixed(1)}%`
+}
 
 export default function AnalyticsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('daily')
@@ -74,6 +88,11 @@ export default function AnalyticsPage() {
   const [visitorData, setVisitorData] = useState<VisitorData[]>([])
   const [visitorLoading, setVisitorLoading] = useState(true)
   const [visitorSummary, setVisitorSummary] = useState({ total: 0, lunch: 0, dinner: 0 })
+
+  // ── リピート分析 state ──────────────────────────────────
+  const [repeatMonth, setRepeatMonth] = useState(format(new Date(), 'yyyy-MM'))
+  const [repeatMetrics, setRepeatMetrics] = useState<RepeatMetrics | null>(null)
+  const [repeatLoading, setRepeatLoading] = useState(true)
 
   const recentYears = Array.from({ length: 5 }, (_, i) =>
     String(new Date().getFullYear() - i)
@@ -267,6 +286,30 @@ export default function AnalyticsPage() {
     setVisitorLoading(false)
   }, [])
 
+  // ── リピート分析: 取得 ──────────────────────────────────
+  const fetchRepeatMetrics = useCallback(async () => {
+    setRepeatLoading(true)
+    const monthStart = startOfMonth(new Date(repeatMonth + '-01'))
+    const monthEnd = endOfMonth(monthStart)
+
+    const { data, error } = await supabase.rpc('repeat_metrics', {
+      p_start: format(monthStart, 'yyyy-MM-dd'),
+      p_end: format(monthEnd, 'yyyy-MM-dd'),
+    })
+
+    if (error) {
+      console.error('repeat_metrics RPC error:', error)
+      setRepeatMetrics(null)
+      setRepeatLoading(false)
+      return
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const row = (data as any[] | null)?.[0]
+    setRepeatMetrics(row ? (row as RepeatMetrics) : null)
+    setRepeatLoading(false)
+  }, [repeatMonth])
+
   useEffect(() => {
     if (viewMode === 'daily') {
       fetchDailyData()
@@ -283,9 +326,17 @@ export default function AnalyticsPage() {
     }
   }, [visitorViewMode, selectedVisitorMonth, selectedYear, fetchDailyVisitorData, fetchMonthlyVisitorData])
 
+  useEffect(() => {
+    fetchRepeatMetrics()
+  }, [fetchRepeatMetrics])
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartData: any[] = viewMode === 'daily' ? dailyData : monthlyData
   const xKey = 'label'
+
+  const linkedSales = repeatMetrics?.linked_sales ?? 0
+  const totalSales = repeatMetrics?.total_sales ?? 0
+  const showLinkWarning = totalSales > 0 && linkedSales / totalSales < 0.5
 
   const formatYAxis = (value: number) => {
     if (value >= 10000) return `${(value / 10000).toFixed(0)}万`
@@ -502,6 +553,59 @@ export default function AnalyticsPage() {
           )}
         </>
       )}
+
+      {/* ── リピート分析 ────────────────────────────── */}
+      <div>
+        <h2 className="font-semibold text-gray-900 mb-3">リピート分析</h2>
+
+        <input
+          type="month"
+          value={repeatMonth}
+          onChange={(e) => setRepeatMonth(e.target.value)}
+          className="input-field mb-3"
+        />
+
+        {repeatLoading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            <div className="card">
+              <p className="text-xs text-gray-500 mb-1">期間内リピート率</p>
+              <p className="text-xl font-bold text-gray-900">
+                {formatPercent(repeatMetrics?.repeaters ?? 0, repeatMetrics?.visitors ?? 0)}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                再来店 {repeatMetrics?.repeaters ?? 0}人 / 来店 {repeatMetrics?.visitors ?? 0}人
+              </p>
+            </div>
+            <div className="card">
+              <p className="text-xs text-gray-500 mb-1">既存顧客比率</p>
+              <p className="text-xl font-bold text-gray-900">
+                {formatPercent(repeatMetrics?.returning_customers ?? 0, repeatMetrics?.visitors ?? 0)}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                うち期間前来店あり {repeatMetrics?.returning_customers ?? 0}人
+              </p>
+            </div>
+            <div className="card">
+              <p className="text-xs text-gray-500 mb-1">顧客紐付け率</p>
+              <p className="text-xl font-bold text-gray-900">
+                {formatPercent(linkedSales, totalSales)}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                {linkedSales} / {totalSales} 件
+              </p>
+              {showLinkWarning && (
+                <p className="text-xs text-amber-600 mt-1">
+                  ⚠ 紐付け率が低いため、上記指標の信頼性は限定的です
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* ── 来客数トレンド ────────────────────────────── */}
       <div className="card">

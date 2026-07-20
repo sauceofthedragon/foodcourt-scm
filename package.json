@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.4.0",
