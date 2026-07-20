@@ -704,7 +704,7 @@ export default function AnalyticsPage() {
         {/* Summary cards */}
         <div className="grid grid-cols-3 gap-2 mb-4">
           <div className="bg-gray-50 rounded-lg p-2 text-center">
-            <p className="text-xs text-gray-500 mb-0.5">来店総数</p>
+            <p className="text-xs text-gray-500 mb-0.5">延べ来店数</p>
             <p className="text-lg font-bold text-gray-900">{visitorSummary.total.toLocaleString()}人</p>
           </div>
           <div className="bg-blue-50 rounded-lg p-2 text-center">
