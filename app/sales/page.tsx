@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Sale, PayMethod } from '@/lib/database.types'
 import { Plus, Search, X, ChevronDown, TrendingUp, Pencil } from 'lucide-react'
@@ -84,6 +84,7 @@ const emptyForm = (): FormData => ({
 export default function SalesPage() {
   const [sales, setSales] = useState<Sale[]>([])
   const [loading, setLoading] = useState(true)
+  const [saleItemsMap, setSaleItemsMap] = useState<Record<string, { item_name: string; qty: number }[]>>({})
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
   }, [])
@@ -126,6 +127,24 @@ export default function SalesPage() {
 
     const { data } = await query
     setSales(data ?? [])
+
+    if (data && data.length > 0) {
+      const ids = data.map((s) => s.id)
+      const { data: itemRows } = await supabase
+        .from('sale_items')
+        .select('sale_id, item_name, qty')
+        .in('sale_id', ids)
+
+      const map: Record<string, { item_name: string; qty: number }[]> = {}
+      ;(itemRows ?? []).forEach((row) => {
+        if (!map[row.sale_id]) map[row.sale_id] = []
+        map[row.sale_id].push({ item_name: row.item_name, qty: Number(row.qty) })
+      })
+      setSaleItemsMap(map)
+    } else {
+      setSaleItemsMap({})
+    }
+
     setLoading(false)
   }, [filterDate, filterCategory])
 
@@ -268,6 +287,12 @@ export default function SalesPage() {
   const itemsTotal = items.reduce((sum, i) => sum + i.subtotal, 0)
   const checkoutTotal = itemsTotal - discount
 
+  const customerNameMap = useMemo(() => {
+    const map = new Map<string, string>()
+    customers.forEach((c) => map.set(c.id, c.name))
+    return map
+  }, [customers])
+
   const totalAmount = sales.reduce((sum, s) => sum + s.amount, 0)
 
   const byPayMethod = sales.reduce((acc, s) => {
@@ -341,46 +366,66 @@ export default function SalesPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {sales.map((s) => (
-            <div key={s.id} className="card">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
-                      {s.category || 'その他'}
-                    </span>
-                    <span className="text-xs text-gray-400">{s.time.slice(0, 5)}</span>
-                    {s.table_no && (
-                      <span className="text-xs text-gray-400">{s.table_no}番卓</span>
-                    )}
+          {sales.map((s) => {
+            const customerId = (s as any).customer_id as string | null | undefined
+            const customerName = customerId ? customerNameMap.get(customerId) : undefined
+            const totalGuests = (s.lunch_count ?? 0) + (s.dinner_count ?? 0)
+            const itemsForSale = saleItemsMap[s.id] ?? []
+
+            return (
+              <div key={s.id} className="card">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
+                        {s.category || 'その他'}
+                      </span>
+                      <span className="text-xs text-gray-400">{s.time.slice(0, 5)}</span>
+                      {s.table_no && (
+                        <span className="text-xs text-gray-400">{s.table_no}番卓</span>
+                      )}
+                      {customerName && (
+                        <span className="text-xs text-gray-400">{customerName}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">
+                        {PAY_METHOD_LABELS[s.pay_method]}
+                      </span>
+                      {totalGuests >= 1 && (
+                        <span className="text-xs text-gray-400">{totalGuests}名</span>
+                      )}
+                      {s.notes && <span className="text-xs text-gray-400 truncate">{s.notes}</span>}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500">
-                      {PAY_METHOD_LABELS[s.pay_method]}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-bold text-gray-900 text-base">
+                      ¥{s.amount.toLocaleString()}
                     </span>
-                    {s.notes && <span className="text-xs text-gray-400 truncate">{s.notes}</span>}
+                    <button
+                      onClick={() => handleEdit(s)}
+                      className="text-gray-300 hover:text-orange-400 transition-colors p-1"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(s.id)}
+                      className="text-gray-300 hover:text-red-400 transition-colors p-1"
+                    >
+                      <X size={16} />
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="font-bold text-gray-900 text-base">
-                    ¥{s.amount.toLocaleString()}
-                  </span>
-                  <button
-                    onClick={() => handleEdit(s)}
-                    className="text-gray-300 hover:text-orange-400 transition-colors p-1"
-                  >
-                    <Pencil size={15} />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(s.id)}
-                    className="text-gray-300 hover:text-red-400 transition-colors p-1"
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
+                <p className="text-xs text-gray-500 truncate mt-1">
+                  {itemsForSale.length > 0 ? (
+                    itemsForSale.map((it) => `${it.item_name}×${it.qty}`).join(' ')
+                  ) : (
+                    <span className="text-gray-300">明細なし</span>
+                  )}
+                </p>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
