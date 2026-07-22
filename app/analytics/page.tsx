@@ -67,6 +67,13 @@ type VisitComposition = {
   total_sales: number
 }
 
+type MonthlyNet = {
+  month_start: string
+  total_sales: number
+  total_cost: number
+  net: number
+}
+
 const PIE_COLORS = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444']
 
 // 分母が0のときはゼロ除算を避けて「—」を返す
@@ -102,6 +109,10 @@ export default function AnalyticsPage() {
   const [repeatMetrics, setRepeatMetrics] = useState<RepeatMetrics | null>(null)
   const [visitComposition, setVisitComposition] = useState<VisitComposition | null>(null)
   const [repeatLoading, setRepeatLoading] = useState(true)
+
+  // ── 収支（売上−仕入）state ──────────────────────────────
+  const [netData, setNetData] = useState<MonthlyNet[]>([])
+  const [netLoading, setNetLoading] = useState(true)
 
   const recentYears = Array.from({ length: 5 }, (_, i) =>
     String(new Date().getFullYear() - i)
@@ -329,6 +340,24 @@ export default function AnalyticsPage() {
     setRepeatLoading(false)
   }, [repeatMonth])
 
+  // ── 収支（売上−仕入）: 取得 ──────────────────────────────
+  const fetchNetData = useCallback(async () => {
+    setNetLoading(true)
+    const { data, error } = await supabase.rpc('monthly_revenue_cost', { p_months: 12 })
+    if (error) {
+      console.error('monthly_revenue_cost RPC error:', error)
+      setNetData([])
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setNetData((data as any[] | null) ?? [])
+    }
+    setNetLoading(false)
+  }, [])
+
+  useEffect(() => {
+    fetchNetData()
+  }, [fetchNetData])
+
   useEffect(() => {
     if (viewMode === 'daily') {
       fetchDailyData()
@@ -387,6 +416,25 @@ export default function AnalyticsPage() {
           <p className="font-semibold text-gray-900 mb-1">{label}</p>
           <p className="text-blue-500">ランチ: {payload[0]?.value ?? 0}人</p>
           <p className="text-orange-500">ディナー: {payload[1]?.value ?? 0}人</p>
+        </div>
+      )
+    }
+    return null
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const NetTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      // payload から各値を名前で拾う（積み上げ順に依存しないため）
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const find = (name: string) => payload.find((p: any) => p.name === name)?.value ?? 0
+      const sales = find('仕入') + find('収支')
+      return (
+        <div className="bg-white border border-gray-100 shadow-lg rounded-lg px-3 py-2 text-xs">
+          <p className="font-semibold text-gray-900 mb-1">{label}</p>
+          <p className="text-gray-900">売上: ¥{sales.toLocaleString()}</p>
+          <p className="text-orange-500">仕入: ¥{find('仕入').toLocaleString()}</p>
+          <p className="text-blue-500">収支: ¥{find('収支').toLocaleString()}</p>
         </div>
       )
     }
@@ -659,6 +707,99 @@ export default function AnalyticsPage() {
         <p className="text-xs text-gray-500 mt-3">
           ※ 顧客未紐付けの会計を新規として集計しています
         </p>
+      </div>
+
+     {/* ── 収支（売上−仕入） ────────────────────────────── */}
+      <div>
+        <h2 className="font-semibold text-gray-900 mb-1">収支（売上−仕入）</h2>
+        <p className="text-xs text-gray-400 mb-3">
+          当月の入金と仕入支出の差引です。会計上の粗利ではありません。
+        </p>
+
+        {netLoading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500" />
+          </div>
+        ) : netData.length === 0 ? (
+          <p className="text-xs text-gray-400">データがありません</p>
+        ) : (
+          <>
+            {(() => {
+              const current = netData[netData.length - 1]
+              const monthLabel = format(new Date(current.month_start), 'M月', { locale: ja })
+              return (
+                <>
+                  {/* 当月サマリー3枚（主役） */}
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <div className="bg-gray-50 rounded-lg p-2 text-center">
+                      <p className="text-xs text-gray-500 mb-0.5">{monthLabel} 売上</p>
+                      <p className="text-lg font-bold text-gray-900">
+                        ¥{Number(current.total_sales).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="bg-red-50 rounded-lg p-2 text-center">
+                      <p className="text-xs text-gray-500 mb-0.5">{monthLabel} 仕入</p>
+                      <p className="text-lg font-bold text-red-500">
+                        ¥{Number(current.total_cost).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="bg-emerald-50 rounded-lg p-2 text-center">
+                      <p className="text-xs text-gray-500 mb-0.5">{monthLabel} 収支</p>
+                      <p className="text-lg font-bold text-emerald-600">
+                        ¥{Number(current.net).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 仕入未入力の注意 */}
+                  {Number(current.total_cost) === 0 && (
+                    <p className="text-xs text-amber-600 mb-3">
+                      ⚠ 当月の仕入が0円です。仕入れの入力漏れの可能性があります（収支が実態より多く出ます）。
+                    </p>
+                  )}
+                </>
+              )
+            })()}
+
+
+            {/* 月次の積み上げバー（売上1本を仕入と収支で塗り分け） */}
+            <div className="card mt-2">
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart
+                  data={netData.map((d) => ({
+                    label: format(new Date(d.month_start), 'M月', { locale: ja }),
+                    仕入: Number(d.total_cost),
+                    収支: Number(d.net),
+                    売上: Number(d.total_sales),
+                  }))}
+                  margin={{ top: 5, right: 5, left: 0, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 10, fill: '#9ca3af' }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fill: '#9ca3af' }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={formatYAxis}
+                    width={36}
+                  />
+                  <Tooltip content={<NetTooltip />} />
+                  <Legend formatter={(value) => <span className="text-xs">{value}</span>} />
+                  <Bar dataKey="仕入" stackId="a" fill="#f97316" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="収支" stackId="a" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <p className="text-xs text-gray-400 mt-2 text-center">
+                バー全体＝売上。オレンジが仕入、青が収支（残り）。オレンジが小さいほど手元に残っています。
+              </p>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── 来客数トレンド ────────────────────────────── */}
