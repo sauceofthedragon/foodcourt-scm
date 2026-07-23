@@ -12,8 +12,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  LineChart,
-  Line,
   PieChart,
   Pie,
   Cell,
@@ -536,39 +534,6 @@ export default function AnalyticsPage() {
             </ResponsiveContainer>
           </div>
 
-          {/* Line chart */}
-          <div className="card">
-            <h2 className="font-semibold text-gray-900 mb-4">売上推移</h2>
-            <ResponsiveContainer width="100%" height={180}>
-              <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis
-                  dataKey={xKey}
-                  tick={{ fontSize: 10, fill: '#9ca3af' }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval={viewMode === 'daily' ? 4 : 0}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: '#9ca3af' }}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={formatYAxis}
-                  width={36}
-                />
-                <Tooltip content={<CustomTooltip />} />
-                <Line
-                  type="monotone"
-                  dataKey="amount"
-                  stroke="#f97316"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
           {/* Category pie chart */}
           {viewMode === 'daily' && categoryData.length > 0 && (
             <div className="card">
@@ -865,7 +830,7 @@ export default function AnalyticsPage() {
         ) : (
           <>
             <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={visitorData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+              <BarChart data={visitorData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis
                   dataKey="label"
@@ -882,25 +847,9 @@ export default function AnalyticsPage() {
                   width={28}
                 />
                 <Tooltip content={<VisitorTooltip />} />
-                <Line
-                  type="monotone"
-                  dataKey="lunch"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                  name="ランチ"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="dinner"
-                  stroke="#f97316"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                  name="ディナー"
-                />
-              </LineChart>
+                <Bar dataKey="lunch" stackId="visitors" fill="#3b82f6" name="ランチ" />
+                <Bar dataKey="dinner" stackId="visitors" fill="#f97316" name="ディナー" />
+              </BarChart>
             </ResponsiveContainer>
 
             {/* 凡例 */}
