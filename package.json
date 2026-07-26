@@ -10,6 +10,7 @@
     "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@supabase/ssr": "^0.4.0",
     "@supabase/supabase-js": "^2.44.4",
     "clsx": "^2.1.1",
