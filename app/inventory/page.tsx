@@ -4,12 +4,75 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { InventoryItem, Purchase } from '@/lib/database.types'
-import { Plus, X, ChevronDown, AlertTriangle, ShoppingBag, Package, Pencil } from 'lucide-react'
+import type { InventoryItem, Purchase, CostCategory } from '@/lib/database.types'
+import { Plus, X, ChevronDown, AlertTriangle, ShoppingBag, Package, Pencil, Download, ExternalLink, Loader2, ClipboardPaste } from 'lucide-react'
 import { format } from 'date-fns'
 import clsx from 'clsx'
 
 const INV_CATEGORIES = ['食材', '飲料', '調味料', '消耗品', '備品', 'その他']
+
+/** 1回の取り込みで処理する枚数。Vercelの実行時間上限(300秒)に対して十分余裕がある */
+const IMPORT_BATCH = 5
+
+/** purchases に埋め込んだ親レシート（原本リンク用） */
+type PurchaseRow = Purchase & {
+  purchase_receipts?: { source_url: string | null; source_file_name: string | null } | null
+}
+
+type ImportResult = {
+  ok: boolean
+  error?: string
+  imported?: { fileName: string; date: string; total: number; lines: number }[]
+  skipped?: { fileName: string; reason: string; detail?: string }[]
+  remaining?: number
+  inboxTotal?: number
+}
+
+const SKIP_REASON_LABEL: Record<string, string> = {
+  date_unreadable: '日付が読めません',
+  total_unreadable: '合計金額が読めません',
+  already_imported: '取り込み済み',
+  drive_update_failed: '取り込み済み（Drive上の移動のみ失敗）',
+  unsupported_type: '対応していないファイル形式',
+  file_too_large: 'ファイルが大きすぎます',
+  not_in_inbox: '00_未取込 にありません',
+  invalid_payload: '貼り付けた内容に不足があります',
+  error: 'エラー',
+}
+
+/** 貼り付け欄に最初から表示しておく見本。書式を説明文で書くより、形を見せる方が早い */
+const PASTE_PLACEHOLDER = `{
+  "receipts": [
+    {
+      "source_file_id": "Driveのファイル ID",
+      "date": "2026-07-28",
+      "supplier": "酒＆業務スーパー みたけ店",
+      "subtotal": 1396,
+      "tax": 111,
+      "discount": null,
+      "total": 1507,
+      "pay_method": "cash",
+      "lines": [
+        {
+          "name": "ホールトマト1号缶",
+          "qty": 2,
+          "unit_cost": 698,
+          "total": 1396,
+          "tax_rate": 8,
+          "cost_category": "food"
+        }
+      ],
+      "unreadable_reason": null
+    }
+  ]
+}`
+
+const COST_CATEGORY_LABEL: Record<CostCategory, string> = {
+  food: '食材',
+  supply: '消耗品',
+  equipment: '備品',
+  other: 'その他',
+}
 
 type ItemForm = {
   name: string
@@ -56,7 +119,7 @@ type Tab = 'inventory' | 'purchases'
 export default function InventoryPage() {
   const [tab, setTab] = useState<Tab>('inventory')
   const [items, setItems] = useState<InventoryItem[]>([])
-  const [purchases, setPurchases] = useState<Purchase[]>([])
+  const [purchases, setPurchases] = useState<PurchaseRow[]>([])
   const [loading, setLoading] = useState(true)
   const [showItemForm, setShowItemForm] = useState(false)
   const [showPurchaseForm, setShowPurchaseForm] = useState(false)
@@ -67,6 +130,10 @@ export default function InventoryPage() {
   const [editingPurchase, setEditingPurchase] = useState<Purchase | null>(null)
   const [filterCategory, setFilterCategory] = useState('')
   const [showLowStock, setShowLowStock] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
 
   const fetchItems = useCallback(async () => {
     const { data } = await supabase
@@ -79,14 +146,80 @@ export default function InventoryPage() {
   }, [])
 
   const fetchPurchases = useCallback(async () => {
-    const { data } = await supabase
+    // 親レシートを埋め込んで取得し、明細から原本画像を開けるようにする
+    const { data, error } = await supabase
+      .from('purchases')
+      .select('*, purchase_receipts(source_url, source_file_name)')
+      .order('date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    if (!error) {
+      setPurchases(data ?? [])
+      return
+    }
+
+    // purchase_receipts が未作成の環境（マイグレーション未適用）では埋め込みが失敗する。
+    // 仕入れ記録そのものは表示できるべきなので、素の取得にフォールバックする。
+    const { data: plain } = await supabase
       .from('purchases')
       .select('*')
       .order('date', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(100)
-    setPurchases(data ?? [])
+    setPurchases(plain ?? [])
   }, [])
+
+  /** 取り込みAPIを叩いて結果を表示する。読み取り経路が違うだけで、後段は共通 */
+  const runImport = useCallback(
+    async (path: string, payload: unknown) => {
+      setImporting(true)
+      setImportResult(null)
+      try {
+        const res = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        const json: ImportResult = await res.json()
+        setImportResult(json)
+        if (json.ok) {
+          fetchPurchases()
+          fetchItems()
+        }
+        return json.ok
+      } catch (e) {
+        setImportResult({ ok: false, error: e instanceof Error ? e.message : String(e) })
+        return false
+      } finally {
+        setImporting(false)
+      }
+    },
+    [fetchItems, fetchPurchases]
+  )
+
+  const handleImport = useCallback(() => {
+    runImport('/api/receipts/import', { limit: IMPORT_BATCH })
+  }, [runImport])
+
+  const handlePaste = useCallback(async () => {
+    // JSONとして壊れている場合は、サーバーに送る前にここで止める。
+    // 往復してから「読めません」と言われるより、貼った直後に分かる方が直しやすい
+    let payload: unknown
+    try {
+      payload = JSON.parse(pasteText)
+    } catch (e) {
+      setImportResult({
+        ok: false,
+        error: 'JSONとして読めませんでした。全体をコピーできているか確認してください。／ ' + String(e),
+      })
+      return
+    }
+
+    const ok = await runImport('/api/receipts/paste', payload)
+    // 成功した内容を残しておくと、次に貼るとき二重送信しやすい。空にする
+    if (ok) setPasteText('')
+  }, [pasteText, runImport])
 
   useEffect(() => {
     fetchItems()
@@ -365,36 +498,182 @@ export default function InventoryPage() {
 
       {tab === 'purchases' && (
         <div className="space-y-2">
+          {/* Driveからの取り込み */}
+          <button
+            onClick={handleImport}
+            disabled={importing}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium border border-orange-200 bg-white text-orange-600 hover:bg-orange-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          >
+            {importing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            {importing ? '読み取り中…（1枚あたり数秒かかります）' : `Driveから取り込み（最大${IMPORT_BATCH}枚）`}
+          </button>
+
+          {/* 貼り付け取り込み。
+              画像をサーバーで読まず、別の場所で読み取った結果を受け取る経路。
+              Anthropic APIの残高が無くても使え、DNG/HEICなど形式の制限も無い */}
+          <div className="rounded-lg border border-gray-200 bg-white">
+            <button
+              onClick={() => setPasteOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-gray-600 hover:text-gray-900"
+            >
+              <span className="flex items-center gap-2">
+                <ClipboardPaste size={15} />
+                読み取り結果を貼り付けて取り込む
+              </span>
+              <ChevronDown
+                size={15}
+                className={clsx('transition-transform text-gray-400', pasteOpen && 'rotate-180')}
+              />
+            </button>
+
+            {pasteOpen && (
+              <div className="px-3 pb-3 space-y-2">
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  API課金は発生しません。<code className="text-gray-700">source_file_id</code> が
+                  <span className="text-gray-700"> 00_未取込 </span>
+                  にあるファイルと一致した行だけ取り込みます。在庫は動きません。
+                </p>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  placeholder={PASTE_PLACEHOLDER}
+                  spellCheck={false}
+                  rows={10}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-orange-200"
+                />
+                <button
+                  onClick={handlePaste}
+                  disabled={importing || pasteText.trim() === ''}
+                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium border border-orange-200 bg-white text-orange-600 hover:bg-orange-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                >
+                  {importing ? <Loader2 size={15} className="animate-spin" /> : <ClipboardPaste size={15} />}
+                  {importing ? '取り込み中…' : '貼り付けた内容を取り込む'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {importResult && (
+            <div
+              className={clsx(
+                'card text-sm space-y-2',
+                importResult.ok ? 'border-gray-100' : 'border-red-200 bg-red-50/40'
+              )}
+            >
+              {!importResult.ok && (
+                <p className="text-red-700 font-medium">取り込みに失敗しました: {importResult.error}</p>
+              )}
+
+              {importResult.ok && (
+                <div className="space-y-1">
+                  <p className="font-medium text-gray-900">
+                    {importResult.imported?.length ?? 0}件を取り込みました
+                    {typeof importResult.remaining === 'number' && importResult.remaining > 0 && (
+                      <span className="text-gray-500 font-normal">
+                        {' '}／ 未取込があと{importResult.remaining}枚あります。もう一度押してください
+                      </span>
+                    )}
+                  </p>
+                  {/* Driveから何件見えているかを必ず出す。
+                      「0件」だけだと、フォルダが空なのか、Apps Scriptが古いのか区別がつかない */}
+                  <p className="text-xs text-gray-500">
+                    Driveの 00_未取込 から {importResult.inboxTotal ?? 0} 件を認識しました
+                    {(importResult.inboxTotal ?? 0) === 0 && (
+                      <span className="text-amber-700">
+                        {' '}
+                        — フォルダにファイルがあるのにここが0の場合、Apps Scriptの再デプロイが未完了です
+                      </span>
+                    )}
+                  </p>
+                </div>
+              )}
+
+              {(importResult.imported?.length ?? 0) > 0 && (
+                <ul className="space-y-0.5 text-xs text-gray-600">
+                  {importResult.imported!.map((r, i) => (
+                    <li key={i} className="flex items-center gap-2">
+                      <span className="text-gray-400">{r.date}</span>
+                      <span className="truncate flex-1">{r.fileName}</span>
+                      <span className="text-gray-400">{r.lines}行</span>
+                      <span className="font-medium text-gray-800">¥{r.total.toLocaleString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {(importResult.skipped?.length ?? 0) > 0 && (
+                <div className="pt-1 border-t border-gray-100">
+                  <p className="text-xs font-medium text-amber-700 mb-1">
+                    取り込めなかったもの（Driveの 00_未取込 に残っています）
+                  </p>
+                  <ul className="space-y-0.5 text-xs text-gray-600">
+                    {importResult.skipped!.map((s, i) => (
+                      <li key={i}>
+                        <span className="truncate">{s.fileName}</span>
+                        <span className="text-amber-700"> — {SKIP_REASON_LABEL[s.reason] ?? s.reason}</span>
+                        {s.detail && <span className="text-gray-400"> / {s.detail}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
           {purchases.length === 0 ? (
             <div className="card text-center py-10">
               <p className="text-gray-400 text-sm">仕入れ記録がありません</p>
             </div>
           ) : (
-            purchases.map((p) => (
-              <div key={p.id} className="card">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900 truncate">{p.item_name}</p>
-                    <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
-                      <span>{p.date}</span>
-                      <span>{p.qty}個</span>
-                      <span>¥{p.unit_cost}/個</span>
-                      {p.supplier && <span>{p.supplier}</span>}
+            purchases.map((p) => {
+              const receiptUrl = p.purchase_receipts?.source_url ?? null
+              const cat = p.cost_category ?? null
+              return (
+                <div key={p.id} className="card">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-gray-900 truncate">{p.item_name}</p>
+                      <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5 flex-wrap">
+                        <span>{p.date}</span>
+                        <span>{p.qty}個</span>
+                        <span>¥{p.unit_cost}/個</span>
+                        {p.supplier && <span>{p.supplier}</span>}
+                        <span
+                          className={clsx(
+                            'px-1.5 py-0.5 rounded',
+                            cat ? 'bg-gray-100 text-gray-600' : 'bg-amber-50 text-amber-700'
+                          )}
+                        >
+                          {cat ? COST_CATEGORY_LABEL[cat] : '未分類'}
+                        </span>
+                        {receiptUrl && (
+                          <a
+                            href={receiptUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-0.5 text-orange-600 hover:underline"
+                          >
+                            <ExternalLink size={11} />
+                            原本
+                          </a>
+                        )}
+                      </div>
+                      {p.notes && <p className="text-xs text-gray-400 mt-0.5">{p.notes}</p>}
                     </div>
-                    {p.notes && <p className="text-xs text-gray-400 mt-0.5">{p.notes}</p>}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-bold text-gray-900">¥{p.total.toLocaleString()}</span>
-                    <button
-                      onClick={() => startEditPurchase(p)}
-                      className="text-gray-300 hover:text-orange-400 transition-colors p-1"
-                    >
-                      <Pencil size={15} />
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-bold text-gray-900">¥{p.total.toLocaleString()}</span>
+                      <button
+                        onClick={() => startEditPurchase(p)}
+                        className="text-gray-300 hover:text-orange-400 transition-colors p-1"
+                      >
+                        <Pencil size={15} />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       )}
